@@ -13,5 +13,7 @@ const (
 	DataTransferPort = 8082
 	PingPort         = 8083
 
+	AgentNamespace = "agent"
+
 	RedisPort = 7777
 )
