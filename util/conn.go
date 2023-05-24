@@ -39,6 +39,7 @@ func CreateMptcpListener(port int32) net.Listener {
 	return listener
 }
 
+// NOTE: use defer file.Close() after this function
 func CreateMptcpConnection(ip string, port int32) (*os.File, net.Conn) {
 	// Create a socket
 	fd, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_STREAM, 0)

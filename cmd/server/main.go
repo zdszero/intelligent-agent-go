@@ -12,6 +12,10 @@ import (
 	"github.com/go-redis/redis/v8"
 )
 
+type AgentServer struct {
+	redisCli *redis.Client
+}
+
 func main() {
 	// Create redis client
 	redisCli := redis.NewClient(&redis.Options{
@@ -28,6 +32,10 @@ func main() {
 	}
 	log.Println("Connected to Redis:", pong)
 
+	ser := AgentServer{
+		redisCli: redisCli,
+	}
+
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() {
@@ -42,7 +50,7 @@ func main() {
 				continue
 			}
 
-			go handleClient(conn, redisCli)
+			go ser.handleClient(conn)
 		}
 	}()
 
@@ -58,13 +66,13 @@ func main() {
 				continue
 			}
 
-			go handleTransfer(conn, redisCli)
+			go ser.handleTransfer(conn)
 		}
 	}()
 	wg.Wait()
 }
 
-func handleClient(conn net.Conn, redisCli *redis.Client) {
+func (ser *AgentServer) handleClient(conn net.Conn) {
 	defer conn.Close()
 
 	var clientId string
@@ -75,7 +83,7 @@ func handleClient(conn net.Conn, redisCli *redis.Client) {
 			clientId = data
 		} else if cmd == config.ClientData {
 			fmt.Println("rpush", clientId, data)
-			err := redisCli.RPush(context.Background(), clientId, data).Err()
+			err := ser.redisCli.RPush(context.Background(), clientId, data).Err()
 			if err != nil {
 				log.Println("Failed to push values to Redis list:", err)
 				return
@@ -84,22 +92,33 @@ func handleClient(conn net.Conn, redisCli *redis.Client) {
 			log.Printf("Client Id Exit: %v", clientId)
 			break
 		} else if cmd == config.FetchClientData {
-
+			ser.fetchData(clientId, data)
 		} else if cmd == config.FetchOldData {
 		}
 	}
 }
 
-func fetchData(clusterIp string) {
-
+func (ser *AgentServer) fetchData(clientId string, clusterIp string) {
+	sockfile, conn := util.CreateMptcpConnection(clusterIp, config.DataTransferPort)
+	defer sockfile.Close()
+	util.SendNetMessage(conn, config.ClientId, clientId)
+	for {
+		cmd, data := util.RecvNetMessage(conn)
+		if cmd == config.TransferData {
+			ser.redisCli.RPush(context.Background(), clientId, data)
+		} else if cmd == config.TransferEnd {
+			log.Println("finish fetching data for client", clientId)
+			break
+		}
+	}
 }
 
-func handleTransfer(conn net.Conn, redisCli *redis.Client) {
+func (ser *AgentServer) handleTransfer(conn net.Conn) {
 	cmd, clientId := util.RecvNetMessage(conn)
 	if cmd != config.ClientId {
 		log.Println("Error: expected client id in the beginning of transfer")
 	}
-	result, err := redisCli.LRange(context.Background(), clientId, 0, -1).Result()
+	result, err := ser.redisCli.LRange(context.Background(), clientId, 0, -1).Result()
 	if err != nil {
 		log.Println("Error:", err)
 		return
