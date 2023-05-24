@@ -37,7 +37,7 @@ func main() {
 	}
 
 	var wg sync.WaitGroup
-	wg.Add(2)
+	wg.Add(3)
 	go func() {
 		defer wg.Done()
 		listener := util.CreateMptcpListener(config.ClientServePort)
@@ -69,6 +69,40 @@ func main() {
 			go ser.handleTransfer(conn)
 		}
 	}()
+
+	go func() {
+		defer wg.Done()
+		serverAddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf(":%d", config.PingPort))
+		if err != nil {
+			fmt.Println("Error resolving server address:", err)
+			return
+		}
+
+		conn, err := net.ListenUDP("udp", serverAddr)
+		if err != nil {
+			fmt.Println("Error listening:", err)
+			return
+		}
+		defer conn.Close()
+
+		buffer := make([]byte, 1024)
+
+		for {
+			n, addr, err := conn.ReadFromUDP(buffer)
+			if err != nil {
+				fmt.Println("Error reading message:", err)
+				continue
+			}
+
+			fmt.Printf("Received ping from %s: %s\n", addr.String(), string(buffer[:n]))
+
+			_, err = conn.WriteToUDP([]byte("pong"), addr)
+			if err != nil {
+				fmt.Println("Error sending pong:", err)
+			}
+		}
+	}()
+
 	wg.Wait()
 }
 

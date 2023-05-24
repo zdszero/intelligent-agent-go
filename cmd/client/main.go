@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 )
 
 const (
@@ -40,7 +41,7 @@ func main() {
 	cli := AgentClient{
 		clientId: *clientId,
 		conn:     nil,
-		k8sCli: *service.NewK8SClient(""),
+		k8sCli:   *service.NewK8SClient(""),
 	}
 
 	interruptChan := make(chan os.Signal, 1)
@@ -62,7 +63,7 @@ func repl(cli AgentClient, eofCh chan bool) {
 	for {
 		fmt.Print("> ")
 		if !scanner.Scan() {
-			eofCh<-true
+			eofCh <- true
 			break
 		}
 		command := scanner.Text()
@@ -170,4 +171,41 @@ func (cli *AgentClient) sendFile(filePath string) {
 		line := scanner.Text()
 		util.SendNetMessage(cli.conn, config.ClientData, line)
 	}
+}
+
+func pingServer(ip string, port int32) {
+	serverAddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", ip, port))
+	if err != nil {
+		fmt.Println("Error resolving server address:", err)
+		return
+	}
+
+	conn, err := net.DialUDP("udp", nil, serverAddr)
+	if err != nil {
+		fmt.Println("Error connecting to server:", err)
+		return
+	}
+	defer conn.Close()
+
+	message := []byte("ping")
+	start := time.Now()
+
+	_, err = conn.Write(message)
+	if err != nil {
+		fmt.Println("Error sending ping:", err)
+		return
+	}
+
+	buffer := make([]byte, 1024)
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second)) // Set read timeout
+
+	_, err = conn.Read(buffer)
+	if err != nil {
+		fmt.Println("Error receiving pong:", err)
+		return
+	}
+
+	elapsed := time.Since(start)
+	fmt.Println("Ping response:", string(buffer))
+	fmt.Println("Round trip time:", elapsed)
 }
