@@ -16,16 +16,11 @@ import (
 	"time"
 )
 
-const (
-	SOL_TCP       = 6
-	MPTCP_ENABLED = 42
-)
-
 type AgentClient struct {
-	clientId string
-	conn     net.Conn
-	k8sCli   service.K8SClient
-	k8sSvc   []service.Service
+	clientId     string
+	conn         net.Conn
+	k8sCli       service.K8SClient
+	k8sSvc       []service.Service
 }
 
 func main() {
@@ -43,6 +38,7 @@ func main() {
 		conn:     nil,
 		k8sCli:   *service.NewK8SClient(""),
 	}
+
 
 	interruptChan := make(chan os.Signal, 1)
 	eofCh := make(chan bool, 1)
@@ -85,15 +81,8 @@ func repl(cli AgentClient, eofCh chan bool) {
 		case ".service":
 			cli.showService()
 		case ".connect":
-			// TODO .connect serviceName
-			arg := tokens[1]
-			parts := strings.Split(arg, ":")
-			ip := parts[0]
-			port, err := strconv.Atoi(parts[1])
-			if err != nil {
-				fmt.Println("Error:", err)
-			}
-			cli.connectTo(ip, int32(port))
+			svcName := tokens[1]
+			cli.connectTo(svcName)
 			fmt.Println("successfully connected")
 		case ".send":
 			if cli.conn != nil {
@@ -110,7 +99,7 @@ func repl(cli AgentClient, eofCh chan bool) {
 
 func printHelp() {
 	help := fmt.Sprintf(
-`Usage:
+		`Usage:
     %s <command> [arguments]
 The commands and arguments are:
     .help
@@ -124,13 +113,18 @@ The commands and arguments are:
 	fmt.Println(help)
 }
 
-func (cli *AgentClient) showService() {
+func (cli *AgentClient) pullService() {
 	cli.k8sSvc = cli.k8sCli.GetNamespaceServices(config.Namespace)
+}
+
+func (cli *AgentClient) showService() {
+	cli.pullService()
 	for _, svc := range cli.k8sSvc {
 		fmt.Printf("Service Name: %s\n", svc.SvcName)
 		fmt.Printf("Cluster IP: %s\n", svc.ClusterIp)
 		fmt.Printf("Ports:\n")
 		for _, port := range svc.Ports {
+			fmt.Printf("    Name: %s\n", port.Name)
 			fmt.Printf("    Protocol: %s\n", port.Protocol)
 			fmt.Printf("    Port: %d\n", port.Port)
 			fmt.Printf("    Node Port: %d\n", port.NodePort)
@@ -140,8 +134,27 @@ func (cli *AgentClient) showService() {
 	}
 }
 
-func (cli *AgentClient) connectTo(ip string, port int32) {
-	sockfile, conn := util.CreateMptcpConnection("127.0.0.1", config.ClientServePort)
+func (cli *AgentClient) connectTo(svcName string) {
+	found := false
+	var nodePort int32
+svcloop:
+	for _, svc := range cli.k8sSvc {
+		if svc.SvcName == svcName {
+			for _, portInfo := range svc.Ports {
+				if portInfo.Name == "client-port" {
+					found = true
+					nodePort = portInfo.NodePort
+					break svcloop
+				}
+			}
+		}
+	}
+	if !found {
+		fmt.Printf("service %s does not exist, please choose a valid service")
+		return
+	}
+
+	sockfile, conn := util.CreateMptcpConnection(config.KubernetesIp, nodePort)
 	defer sockfile.Close()
 
 	if cli.conn != nil {
@@ -149,6 +162,12 @@ func (cli *AgentClient) connectTo(ip string, port int32) {
 	}
 	cli.conn = conn
 	util.SendNetMessage(cli.conn, config.ClientId, cli.clientId)
+	finished, _ := util.RecvNetMessage(cli.conn)
+	if finished != config.TransferFinished {
+		fmt.Errorf("Fail to receive TransferFinished after sending ClientId")
+		os.Exit(1)
+	}
+	cli.k8sCli.EtcdPut(cli.clientId, svcName)
 }
 
 func (cli *AgentClient) sendFile(filePath string) {

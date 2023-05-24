@@ -18,6 +18,7 @@ type K8SClient struct {
 }
 
 type PortInfo struct {
+	Name       string
 	Protocol   string
 	Port       int32
 	NodePort   int32
@@ -71,6 +72,7 @@ func (k8s *K8SClient) GetNamespaceServices(namespace string) []Service {
 		}
 		for _, port := range svc.Spec.Ports {
 			p := PortInfo{
+				Name:       port.Name,
 				Protocol:   string(port.Protocol),
 				Port:       port.Port,
 				NodePort:   port.NodePort,
@@ -101,7 +103,6 @@ func (k8s *K8SClient) EtcdGet(key string) (string, error) {
 	data := cm.Data[key]
 	return data, nil
 }
-
 
 func (k8s *K8SClient) EtcdDelete(key string) error {
 	cm, err := k8s.cli.CoreV1().ConfigMaps(config.Namespace).Get(context.TODO(), config.EtcdClientMapName, metav1.GetOptions{})

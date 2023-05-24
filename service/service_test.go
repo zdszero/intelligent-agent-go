@@ -24,3 +24,11 @@ func TestReadWrite(t *testing.T) {
 	val, _ = cli.EtcdGet("client2")
 	fmt.Println("read value:", val)
 }
+
+func TestRead2(t *testing.T) {
+	cli := NewK8SClient("")
+	val, _ := cli.EtcdGet("client1")
+	fmt.Println("read value:", val)
+	val, _ = cli.EtcdGet("client2")
+	fmt.Println("read value:", val)
+}

@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"os"
 	"smart-agent/config"
+	"smart-agent/service"
 	"smart-agent/util"
 	"sync"
 
@@ -13,7 +15,11 @@ import (
 )
 
 type AgentServer struct {
-	redisCli *redis.Client
+	redisCli         *redis.Client
+	k8sCli           service.K8SClient
+	k8sSvc           []service.Service
+	mySvcName string
+	myClusterIp string
 }
 
 func main() {
@@ -32,8 +38,14 @@ func main() {
 	}
 	log.Println("Connected to Redis:", pong)
 
+	serviceName := os.Getenv("KUBERNETES_SERVICE_NAME")
+	clusterIP := os.Getenv("KUBERNETES_SERVICE_HOST")
 	ser := AgentServer{
-		redisCli: redisCli,
+		redisCli:    redisCli,
+		k8sCli:      *service.NewK8SClient(""),
+		k8sSvc:      []service.Service{},
+		mySvcName:   serviceName,
+		myClusterIp: clusterIP,
 	}
 
 	var wg sync.WaitGroup
@@ -106,6 +118,10 @@ func main() {
 	wg.Wait()
 }
 
+func (ser *AgentServer) pollService() {
+	ser.k8sSvc = ser.k8sCli.GetNamespaceServices(config.Namespace)
+}
+
 func (ser *AgentServer) handleClient(conn net.Conn) {
 	defer conn.Close()
 
@@ -115,6 +131,9 @@ func (ser *AgentServer) handleClient(conn net.Conn) {
 		if cmd == config.ClientId {
 			log.Printf("Client Id Enter: %v", data)
 			clientId = data
+			// try to fetch client's old data
+			ser.fetchData(clientId)
+			util.SendNetMessage(conn, config.TransferFinished, "")
 		} else if cmd == config.ClientData {
 			fmt.Println("rpush", clientId, data)
 			err := ser.redisCli.RPush(context.Background(), clientId, data).Err()
@@ -126,13 +145,35 @@ func (ser *AgentServer) handleClient(conn net.Conn) {
 			log.Printf("Client Id Exit: %v", clientId)
 			break
 		} else if cmd == config.FetchClientData {
-			ser.fetchData(clientId, data)
-		} else if cmd == config.FetchOldData {
+			ser.fetchData(clientId)
 		}
 	}
 }
 
-func (ser *AgentServer) fetchData(clientId string, clusterIp string) {
+func (ser *AgentServer) fetchData(clientId string) {
+	ser.pollService()
+	cliPrevSvc, err := ser.k8sCli.EtcdGet(clientId)
+	if err != nil {
+		log.Printf("Cannot fetch %s's data", clientId)
+		return
+	}
+
+	if cliPrevSvc == ser.mySvcName || cliPrevSvc == "" {
+		return
+	}
+
+	var clusterIp string
+	found := false
+	for _, svc := range ser.k8sSvc {
+		if svc.SvcName == cliPrevSvc {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return
+	}
+
 	sockfile, conn := util.CreateMptcpConnection(clusterIp, config.DataTransferPort)
 	defer sockfile.Close()
 	util.SendNetMessage(conn, config.ClientId, clientId)
@@ -161,4 +202,9 @@ func (ser *AgentServer) handleTransfer(conn net.Conn) {
 		util.SendNetMessage(conn, config.TransferData, element)
 	}
 	util.SendNetMessage(conn, config.TransferEnd, "")
+	keysDel, err := ser.redisCli.Del(context.Background(), clientId).Result()
+	if err != nil {
+		log.Println("Failed to delete list", clientId)
+	}
+	log.Printf("Delete list %s, number of keys deleted: %d\n", clientId, keysDel)
 }
