@@ -125,7 +125,7 @@ The commands and arguments are:
 }
 
 func (cli *AgentClient) showService() {
-	cli.k8sSvc = cli.k8sCli.GetNamespaceServices(config.AgentNamespace)
+	cli.k8sSvc = cli.k8sCli.GetNamespaceServices(config.Namespace)
 	for _, svc := range cli.k8sSvc {
 		fmt.Printf("Service Name: %s\n", svc.SvcName)
 		fmt.Printf("Cluster IP: %s\n", svc.ClusterIp)

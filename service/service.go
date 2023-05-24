@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"smart-agent/config"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
@@ -80,4 +81,34 @@ func (k8s *K8SClient) GetNamespaceServices(namespace string) []Service {
 		ret = append(ret, cur)
 	}
 	return ret
+}
+
+func (k8s *K8SClient) EtcdPut(key, value string) error {
+	cm, err := k8s.cli.CoreV1().ConfigMaps(config.Namespace).Get(context.TODO(), config.EtcdClientMapName, metav1.GetOptions{})
+	if err != nil {
+		return err
+	}
+	cm.Data[key] = value
+	_, err = k8s.cli.CoreV1().ConfigMaps(config.Namespace).Update(context.TODO(), cm, metav1.UpdateOptions{})
+	return err
+}
+
+func (k8s *K8SClient) EtcdGet(key string) (string, error) {
+	cm, err := k8s.cli.CoreV1().ConfigMaps(config.Namespace).Get(context.TODO(), config.EtcdClientMapName, metav1.GetOptions{})
+	if err != nil {
+		return "", err
+	}
+	data := cm.Data[key]
+	return data, nil
+}
+
+
+func (k8s *K8SClient) EtcdDelete(key string) error {
+	cm, err := k8s.cli.CoreV1().ConfigMaps(config.Namespace).Get(context.TODO(), config.EtcdClientMapName, metav1.GetOptions{})
+	if err != nil {
+		return err
+	}
+	delete(cm.Data, key)
+	_, err = k8s.cli.CoreV1().ConfigMaps(config.Namespace).Update(context.TODO(), cm, metav1.UpdateOptions{})
+	return err
 }
