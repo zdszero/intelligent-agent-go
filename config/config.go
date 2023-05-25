@@ -2,13 +2,15 @@ package config
 
 const (
 	FetchClientData uint32 = iota
+	// client settings
 	ClientId
+	ClusterIp
 	TransferFinished
 	ClientData
 	ClientExit
+	// transfer settings
 	TransferData
 	TransferEnd
-	InvalidClientId
 
 	ClientServePort  = 8081
 	DataTransferPort = 8082

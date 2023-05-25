@@ -17,10 +17,11 @@ import (
 )
 
 type AgentClient struct {
-	clientId     string
-	conn         net.Conn
-	k8sCli       service.K8SClient
-	k8sSvc       []service.Service
+	clientId      string
+	conn          net.Conn
+	k8sCli        service.K8SClient
+	k8sSvc        []service.Service
+	prevClusterIp string
 }
 
 func main() {
@@ -34,11 +35,11 @@ func main() {
 	}
 
 	cli := AgentClient{
-		clientId: *clientId,
-		conn:     nil,
-		k8sCli:   *service.NewK8SClient(""),
+		clientId:      *clientId,
+		conn:          nil,
+		k8sCli:        *service.NewK8SClient(""),
+		prevClusterIp: "",
 	}
-
 
 	interruptChan := make(chan os.Signal, 1)
 	eofCh := make(chan bool, 1)
@@ -77,12 +78,23 @@ func repl(cli AgentClient, eofCh chan bool) {
 			if cli.conn != nil {
 				util.SendNetMessage(cli.conn, config.ClientExit, "")
 			}
+			eofCh <- true
 			return
 		case ".service":
 			cli.showService()
 		case ".connect":
 			svcName := tokens[1]
-			cli.connectTo(svcName)
+			cli.connectToService(svcName)
+			fmt.Println("successfully connected")
+		case ".connectto":
+			arg := tokens[1]
+			parts := strings.Split(arg, ":")
+			ip := parts[0]
+			port, err := strconv.Atoi(parts[1])
+			if err != nil {
+				fmt.Println("Error:", err)
+			}
+			cli.connectToIpPort(ip, int32(port))
 			fmt.Println("successfully connected")
 		case ".send":
 			if cli.conn != nil {
@@ -90,7 +102,17 @@ func repl(cli AgentClient, eofCh chan bool) {
 			}
 		case ".sendfile":
 			cli.sendFile(tokens[1])
+		case ".ping":
+			svcName := tokens[1]
+			cli.pingServer(svcName)
 		case ".fetch":
+			var fetchClient string
+			if len(tokens) == 1 {
+				fetchClient = cli.clientId
+			} else {
+				fetchClient = tokens[1]
+			}
+			cli.fetchClientData(fetchClient)
 		default:
 			fmt.Println("Unknown command. Type '.help' for available commands.")
 		}
@@ -119,24 +141,18 @@ func (cli *AgentClient) pullService() {
 
 func (cli *AgentClient) showService() {
 	cli.pullService()
+	headers := []string{"Service Name", "ClusterIp", "Delay"}
+	fmt.Printf("%-20s %-20s %-15s\n", headers[0], headers[1], headers[2])
+	fmt.Println(strings.Repeat("-", 55))
 	for _, svc := range cli.k8sSvc {
-		fmt.Printf("Service Name: %s\n", svc.SvcName)
-		fmt.Printf("Cluster IP: %s\n", svc.ClusterIp)
-		fmt.Printf("Ports:\n")
-		for _, port := range svc.Ports {
-			fmt.Printf("    Name: %s\n", port.Name)
-			fmt.Printf("    Protocol: %s\n", port.Protocol)
-			fmt.Printf("    Port: %d\n", port.Port)
-			fmt.Printf("    Node Port: %d\n", port.NodePort)
-			fmt.Printf("    Target Port: %s\n", port.TargetPort)
-		}
-		fmt.Println("--------------------")
+		fmt.Printf("%-20s %-20s %-15s\n", svc.SvcName, svc.ClusterIp, "")
 	}
 }
 
-func (cli *AgentClient) connectTo(svcName string) {
+func (cli *AgentClient) connectToService(svcName string) {
 	found := false
 	var nodePort int32
+	var clusterIp string
 svcloop:
 	for _, svc := range cli.k8sSvc {
 		if svc.SvcName == svcName {
@@ -144,17 +160,26 @@ svcloop:
 				if portInfo.Name == "client-port" {
 					found = true
 					nodePort = portInfo.NodePort
+					clusterIp = svc.ClusterIp
 					break svcloop
 				}
 			}
 		}
 	}
 	if !found {
-		fmt.Printf("service %s does not exist, please choose a valid service")
+		fmt.Printf("service %s does not exist, please choose a valid service", svcName)
 		return
 	}
 
-	sockfile, conn := util.CreateMptcpConnection(config.KubernetesIp, nodePort)
+	cli.connectToIpPort(config.KubernetesIp, nodePort)
+	cli.prevClusterIp = clusterIp
+	cli.k8sCli.EtcdPut(cli.clientId, clusterIp)
+}
+
+func (cli *AgentClient) connectToIpPort(ip string, port int32) {
+	fmt.Printf("connect to %s:%d", ip, port)
+
+	sockfile, conn := util.CreateMptcpConnection(ip, port)
 	defer sockfile.Close()
 
 	if cli.conn != nil {
@@ -162,12 +187,12 @@ svcloop:
 	}
 	cli.conn = conn
 	util.SendNetMessage(cli.conn, config.ClientId, cli.clientId)
+	util.SendNetMessage(cli.conn, config.ClusterIp, cli.prevClusterIp)
 	finished, _ := util.RecvNetMessage(cli.conn)
 	if finished != config.TransferFinished {
-		fmt.Errorf("Fail to receive TransferFinished after sending ClientId")
+		fmt.Println("Fail to receive TransferFinished after sending ClientId")
 		os.Exit(1)
 	}
-	cli.k8sCli.EtcdPut(cli.clientId, svcName)
 }
 
 func (cli *AgentClient) sendFile(filePath string) {
@@ -192,8 +217,29 @@ func (cli *AgentClient) sendFile(filePath string) {
 	}
 }
 
-func pingServer(ip string, port int32) {
-	serverAddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", ip, port))
+func (cli *AgentClient) pingServer(svcName string) {
+
+	found := false
+	var nodePort int32
+svcloop:
+	for _, svc := range cli.k8sSvc {
+		if svc.SvcName == svcName {
+			for _, portInfo := range svc.Ports {
+				if portInfo.Name == "ping-port" {
+					found = true
+					nodePort = portInfo.NodePort
+					break svcloop
+				}
+			}
+		}
+	}
+	if !found {
+		fmt.Printf("service %s does not exist, please choose a valid service", svcName)
+		return
+	}
+
+	fmt.Printf("connect to %s:%d", config.KubernetesIp, nodePort)
+	serverAddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", config.KubernetesIp, nodePort))
 	if err != nil {
 		fmt.Println("Error resolving server address:", err)
 		return
@@ -227,4 +273,27 @@ func pingServer(ip string, port int32) {
 	elapsed := time.Since(start)
 	fmt.Println("Ping response:", string(buffer))
 	fmt.Println("Round trip time:", elapsed)
+}
+
+func (cli *AgentClient) fetchClientData(clientId string) {
+	clusterIp, err := cli.k8sCli.EtcdGet(clientId)
+	if err != nil {
+		fmt.Printf("Failed to fetch %s's clusterIp: %v", clientId, clusterIp)
+		return
+	}
+	util.SendNetMessage(cli.conn, config.FetchClientData, clientId)
+	util.SendNetMessage(cli.conn, config.ClusterIp, clusterIp)
+	dataset := []string{}
+	for {
+		cmd, data := util.RecvNetMessage(cli.conn)
+		if cmd == config.TransferData {
+			dataset = append(dataset, data)
+		} else if cmd == config.TransferEnd {
+			break
+		}
+	}
+	fmt.Printf("%s data:\n", clientId)
+	for _, data := range dataset {
+		fmt.Println(data)
+	}
 }

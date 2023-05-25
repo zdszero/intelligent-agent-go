@@ -25,7 +25,7 @@ func CreateMptcpListener(port int32) net.Listener {
 		fmt.Println("Failed to create socket", err)
 		return nil
 	}
-	defer syscall.Close(fd)
+	// defer syscall.Close(fd)
 
 	// Bind the socket to a specific address and port
 	addr := syscall.SockaddrInet4{
@@ -47,12 +47,13 @@ func CreateMptcpListener(port int32) net.Listener {
 
 	// Create a net.Listener from the socket
 	file := os.NewFile(uintptr(fd), "")
-	defer file.Close()
+	// defer file.Close()
 	listener, err := net.FileListener(file)
 	if err != nil {
 		fmt.Println("FileListener creation failed:", err)
 		return nil
 	}
+	fmt.Printf("listener on port %d has been created\n", port)
 	return listener
 }
 

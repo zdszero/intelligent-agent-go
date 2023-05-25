@@ -7,7 +7,6 @@ import (
 	"net"
 	"os"
 	"smart-agent/config"
-	"smart-agent/service"
 	"smart-agent/util"
 	"sync"
 
@@ -15,10 +14,7 @@ import (
 )
 
 type AgentServer struct {
-	redisCli         *redis.Client
-	k8sCli           service.K8SClient
-	k8sSvc           []service.Service
-	mySvcName string
+	redisCli    *redis.Client
 	myClusterIp string
 }
 
@@ -38,13 +34,10 @@ func main() {
 	}
 	log.Println("Connected to Redis:", pong)
 
-	serviceName := os.Getenv("KUBERNETES_SERVICE_NAME")
-	clusterIP := os.Getenv("KUBERNETES_SERVICE_HOST")
+	clusterIP := os.Getenv("MY_AGENT_SERVICE_SERVICE_HOST")
+	log.Println("agent serer cluster ip:", clusterIP)
 	ser := AgentServer{
 		redisCli:    redisCli,
-		k8sCli:      *service.NewK8SClient(""),
-		k8sSvc:      []service.Service{},
-		mySvcName:   serviceName,
 		myClusterIp: clusterIP,
 	}
 
@@ -53,10 +46,11 @@ func main() {
 	go func() {
 		defer wg.Done()
 		listener := util.CreateMptcpListener(config.ClientServePort)
-		defer listener.Close()
+		// defer listener.Close()
 		// Accept and handle client connections
 		for {
 			conn, err := listener.Accept()
+			log.Println("Accept connection from:", conn)
 			if err != nil {
 				log.Println("Failed to accept client connection:", err)
 				continue
@@ -86,13 +80,13 @@ func main() {
 		defer wg.Done()
 		serverAddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf(":%d", config.PingPort))
 		if err != nil {
-			fmt.Println("Error resolving server address:", err)
+			log.Println("Error resolving server address:", err)
 			return
 		}
 
 		conn, err := net.ListenUDP("udp", serverAddr)
 		if err != nil {
-			fmt.Println("Error listening:", err)
+			log.Println("Error listening:", err)
 			return
 		}
 		defer conn.Close()
@@ -102,24 +96,20 @@ func main() {
 		for {
 			n, addr, err := conn.ReadFromUDP(buffer)
 			if err != nil {
-				fmt.Println("Error reading message:", err)
+				log.Println("Error reading message:", err)
 				continue
 			}
 
-			fmt.Printf("Received ping from %s: %s\n", addr.String(), string(buffer[:n]))
+			log.Printf("Received ping from %s: %s\n", addr.String(), string(buffer[:n]))
 
 			_, err = conn.WriteToUDP([]byte("pong"), addr)
 			if err != nil {
-				fmt.Println("Error sending pong:", err)
+				log.Println("Error sending pong:", err)
 			}
 		}
 	}()
 
 	wg.Wait()
-}
-
-func (ser *AgentServer) pollService() {
-	ser.k8sSvc = ser.k8sCli.GetNamespaceServices(config.Namespace)
 }
 
 func (ser *AgentServer) handleClient(conn net.Conn) {
@@ -129,62 +119,62 @@ func (ser *AgentServer) handleClient(conn net.Conn) {
 	for {
 		cmd, data := util.RecvNetMessage(conn)
 		if cmd == config.ClientId {
-			log.Printf("Client Id Enter: %v", data)
+			log.Printf("Client %s Enter", data)
 			clientId = data
-			// try to fetch client's old data
-			ser.fetchData(clientId)
+			_, clusterIp := util.RecvNetMessage(conn)
+			if clusterIp != "" && clusterIp != ser.myClusterIp {
+				ser.pushFetchedData(clientId, clusterIp)
+			}
 			util.SendNetMessage(conn, config.TransferFinished, "")
 		} else if cmd == config.ClientData {
-			fmt.Println("rpush", clientId, data)
+			log.Println("rpush", clientId, data)
 			err := ser.redisCli.RPush(context.Background(), clientId, data).Err()
 			if err != nil {
 				log.Println("Failed to push values to Redis list:", err)
 				return
 			}
 		} else if cmd == config.ClientExit {
-			log.Printf("Client Id Exit: %v", clientId)
+			log.Printf("Client %s Exit", clientId)
 			break
 		} else if cmd == config.FetchClientData {
-			ser.fetchData(clientId)
+			targetClientId := data
+			_, targetClusterIp := util.RecvNetMessage(conn)
+			for _, data := range ser.fetchData(targetClientId, targetClusterIp) {
+				util.SendNetMessage(conn, config.TransferData, data)
+			}
+			util.SendNetMessage(conn, config.TransferEnd, "")
 		}
 	}
 }
 
-func (ser *AgentServer) fetchData(clientId string) {
-	ser.pollService()
-	cliPrevSvc, err := ser.k8sCli.EtcdGet(clientId)
-	if err != nil {
-		log.Printf("Cannot fetch %s's data", clientId)
-		return
-	}
-
-	if cliPrevSvc == ser.mySvcName || cliPrevSvc == "" {
-		return
-	}
-
-	var clusterIp string
-	found := false
-	for _, svc := range ser.k8sSvc {
-		if svc.SvcName == cliPrevSvc {
-			found = true
-			break
+func (ser *AgentServer) fetchData(clientId string, clusterIp string) []string {
+	if clusterIp == ser.myClusterIp {
+		result, err := ser.redisCli.LRange(context.Background(), clientId, 0, -1).Result()
+		if err != nil {
+			log.Println("Error during redis lrange:", err)
+			return []string{}
 		}
+		return result
 	}
-	if !found {
-		return
-	}
-
 	sockfile, conn := util.CreateMptcpConnection(clusterIp, config.DataTransferPort)
 	defer sockfile.Close()
 	util.SendNetMessage(conn, config.ClientId, clientId)
+	dataset := []string{}
 	for {
 		cmd, data := util.RecvNetMessage(conn)
 		if cmd == config.TransferData {
-			ser.redisCli.RPush(context.Background(), clientId, data)
+			dataset = append(dataset, data)
 		} else if cmd == config.TransferEnd {
 			log.Println("finish fetching data for client", clientId)
 			break
 		}
+	}
+	return dataset
+}
+
+func (ser *AgentServer) pushFetchedData(clientId string, clusterIp string) {
+	for _, data := range ser.fetchData(clientId, clusterIp) {
+		ser.redisCli.RPush(context.Background(), clientId, data)
 	}
 }
 
@@ -195,7 +185,7 @@ func (ser *AgentServer) handleTransfer(conn net.Conn) {
 	}
 	result, err := ser.redisCli.LRange(context.Background(), clientId, 0, -1).Result()
 	if err != nil {
-		log.Println("Error:", err)
+		log.Println("Error during redis lrange:", err)
 		return
 	}
 	for _, element := range result {
