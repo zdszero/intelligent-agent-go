@@ -2,6 +2,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: my-agent-service
+  namespace: smart-agent
 spec:
   selector:
     app: my-agent

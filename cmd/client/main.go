@@ -22,6 +22,7 @@ type AgentClient struct {
 	k8sCli        service.K8SClient
 	k8sSvc        []service.Service
 	prevClusterIp string
+	currClusterIp string
 }
 
 func main() {
@@ -171,13 +172,14 @@ svcloop:
 		return
 	}
 
+	cli.prevClusterIp = cli.currClusterIp
 	cli.connectToIpPort(config.KubernetesIp, nodePort)
-	cli.prevClusterIp = clusterIp
+	cli.currClusterIp = clusterIp
 	cli.k8sCli.EtcdPut(cli.clientId, clusterIp)
 }
 
 func (cli *AgentClient) connectToIpPort(ip string, port int32) {
-	fmt.Printf("connect to %s:%d", ip, port)
+	fmt.Printf("connect to %s:%d\n", ip, port)
 
 	sockfile, conn := util.CreateMptcpConnection(ip, port)
 	defer sockfile.Close()
@@ -278,7 +280,7 @@ svcloop:
 func (cli *AgentClient) fetchClientData(clientId string) {
 	clusterIp, err := cli.k8sCli.EtcdGet(clientId)
 	if err != nil {
-		fmt.Printf("Failed to fetch %s's clusterIp: %v", clientId, clusterIp)
+		fmt.Printf("Failed to fetch %s's clusterIp: %v\n", clientId, err)
 		return
 	}
 	util.SendNetMessage(cli.conn, config.FetchClientData, clientId)

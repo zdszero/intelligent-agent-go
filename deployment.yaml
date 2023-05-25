@@ -2,6 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: my-agent-deployment
+  namespace: smart-agent
 spec:
   replicas: 1
   selector:

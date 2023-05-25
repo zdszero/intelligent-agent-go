@@ -34,8 +34,8 @@ func main() {
 	}
 	log.Println("Connected to Redis:", pong)
 
-	clusterIP := os.Getenv("MY_AGENT_SERVICE_SERVICE_HOST")
-	log.Println("agent serer cluster ip:", clusterIP)
+	clusterIP := getClusterIp()
+	log.Println("agent server cluster ip:", clusterIP)
 	ser := AgentServer{
 		redisCli:    redisCli,
 		myClusterIp: clusterIP,
@@ -112,6 +112,17 @@ func main() {
 	wg.Wait()
 }
 
+func getClusterIp() string {
+	var clusterIp string
+	for i := 1; i <= 20; i++ {
+		clusterIp = os.Getenv(fmt.Sprintf("MY_AGENT_SERVICE%d_SERVICE_HOST", i))
+		if clusterIp != "" {
+			break
+		}
+	}
+	return clusterIp
+}
+
 func (ser *AgentServer) handleClient(conn net.Conn) {
 	defer conn.Close()
 
@@ -156,6 +167,7 @@ func (ser *AgentServer) fetchData(clientId string, clusterIp string) []string {
 		}
 		return result
 	}
+	log.Printf("start fetching data for %s from %s:%d\n", clientId, clusterIp, config.DataTransferPort)
 	sockfile, conn := util.CreateMptcpConnection(clusterIp, config.DataTransferPort)
 	defer sockfile.Close()
 	util.SendNetMessage(conn, config.ClientId, clientId)
@@ -165,10 +177,10 @@ func (ser *AgentServer) fetchData(clientId string, clusterIp string) []string {
 		if cmd == config.TransferData {
 			dataset = append(dataset, data)
 		} else if cmd == config.TransferEnd {
-			log.Println("finish fetching data for client", clientId)
 			break
 		}
 	}
+	log.Printf("finish fetching data for %s from %s\n", clientId, clusterIp)
 	return dataset
 }
 
@@ -181,8 +193,9 @@ func (ser *AgentServer) pushFetchedData(clientId string, clusterIp string) {
 func (ser *AgentServer) handleTransfer(conn net.Conn) {
 	cmd, clientId := util.RecvNetMessage(conn)
 	if cmd != config.ClientId {
-		log.Println("Error: expected client id in the beginning of transfer")
+		log.Fatalln("Error: expected client id in the beginning of transfer")
 	}
+	log.Printf("Send %s data to %s\n", clientId, conn.LocalAddr().String())
 	result, err := ser.redisCli.LRange(context.Background(), clientId, 0, -1).Result()
 	if err != nil {
 		log.Println("Error during redis lrange:", err)
@@ -197,4 +210,5 @@ func (ser *AgentServer) handleTransfer(conn net.Conn) {
 		log.Println("Failed to delete list", clientId)
 	}
 	log.Printf("Delete list %s, number of keys deleted: %d\n", clientId, keysDel)
+	log.Printf("Send %s data finished\n", clientId)
 }

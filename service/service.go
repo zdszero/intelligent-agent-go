@@ -6,7 +6,9 @@ import (
 	"os"
 	"path/filepath"
 	"smart-agent/config"
+	"strings"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
@@ -85,9 +87,31 @@ func (k8s *K8SClient) GetNamespaceServices(namespace string) []Service {
 	return ret
 }
 
+func (k8s *K8SClient) createConfigMap(data map[string]string) error {
+	// Create a new ConfigMap object with the desired key-value pairs.
+	configMap := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      config.EtcdClientMapName,
+			Namespace: config.Namespace,
+		},
+		Data: data,
+	}
+
+	// Create the ConfigMap in the specified namespace.
+	_, err := k8s.cli.CoreV1().ConfigMaps(config.Namespace).Create(context.TODO(), configMap, metav1.CreateOptions{})
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
 func (k8s *K8SClient) EtcdPut(key, value string) error {
 	cm, err := k8s.cli.CoreV1().ConfigMaps(config.Namespace).Get(context.TODO(), config.EtcdClientMapName, metav1.GetOptions{})
 	if err != nil {
+		errmsg := err.Error()
+		if strings.HasPrefix(errmsg, "configmaps") && strings.HasSuffix(errmsg, "not found") {
+			return k8s.createConfigMap(map[string]string{key: value})
+		}
 		return err
 	}
 	cm.Data[key] = value

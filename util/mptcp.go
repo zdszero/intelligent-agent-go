@@ -129,7 +129,7 @@ func getSockProto() int {
 		command = fmt.Sprintf("cat %s | grep 'IPPROTO_MPTCP ='", socketpath)
 		output, err = exec.Command("bash", "-c", command).Output()
 		if err != nil {
-			fmt.Printf("Cannot find mptcp in %s\n", socketpath)
+			// fmt.Printf("Cannot find mptcp in %s\n", socketpath)
 			return 0
 		}
 		re := regexp.MustCompile(`\d+`)

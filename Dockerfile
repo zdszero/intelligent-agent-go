@@ -8,4 +8,4 @@ COPY server /app/server
 WORKDIR /app
 CMD redis-server --port 7777 & \
     sleep 2 && \
-    ./server
+    ./server 2>&1
