@@ -23,17 +23,17 @@ type ServerInfo struct {
 	serviceName string
 	proxyPort   int32
 	pingPort    int32
-	delay       int
+	delay       time.Duration
 }
 
 type AgentClient struct {
-	clientId         string
-	conn             net.Conn
-	k8sCli           service.K8SClient
-	k8sSvc           []service.Service
-	serverInfo       []ServerInfo
-	prevClusterIp    string
-	currClusterIp    string
+	clientId      string
+	conn          net.Conn
+	k8sCli        service.K8SClient
+	k8sSvc        []service.Service
+	serverInfo    []ServerInfo
+	prevClusterIp string
+	currClusterIp string
 }
 
 func main() {
@@ -63,10 +63,10 @@ func main() {
 
 func newAgentClient(clientId string) AgentClient {
 	cli := AgentClient{
-		clientId:         clientId,
-		conn:             nil,
-		k8sCli:           *service.NewK8SClient(""),
-		prevClusterIp:    "",
+		clientId:      clientId,
+		conn:          nil,
+		k8sCli:        *service.NewK8SClient(""),
+		prevClusterIp: "",
 	}
 	cli.updateServerInfo()
 	return cli
@@ -118,9 +118,6 @@ func repl(cli AgentClient, eofCh chan bool) {
 			cli.sendData(tokens[1])
 		case ".sendfile":
 			cli.sendFile(tokens[1])
-		case ".ping":
-			svcName := tokens[1]
-			cli.pingServer(svcName)
 		case ".fetch":
 			var fetchClient string
 			if len(tokens) == 1 {
@@ -177,7 +174,12 @@ func (cli *AgentClient) updateServerInfo() {
 				if portInfo.Name == "client-port" {
 					serverInfo[lastDigit].proxyPort = portInfo.NodePort
 				} else if portInfo.Name == "ping-port" {
-					serverInfo[lastDigit].pingPort = portInfo.Port
+					pingPort := portInfo.NodePort
+					serverInfo[lastDigit].pingPort = pingPort
+					serverInfo[lastDigit].delay, err = cli.getPingDelay(pingPort)
+					if err != nil {
+						fmt.Println("fail to ping server on port %d\n", pingPort)
+					}
 				}
 			}
 		} else if strings.HasPrefix(svc.SvcName, config.ClusterServicePrefix) {
@@ -188,11 +190,13 @@ func (cli *AgentClient) updateServerInfo() {
 }
 
 func (cli *AgentClient) showService() {
+	cli.updateServerInfo()
 	headers := []string{"Service Name", "Proxy IP", "Delay"}
-	fmt.Printf("%-20s %-20s %-15s\n", headers[0], headers[1], headers[2])
+	fmt.Printf("%-20s %-25s %-15s\n", headers[0], headers[1], headers[2])
 	fmt.Println(strings.Repeat("-", 60))
 	for _, info := range cli.serverInfo {
-		fmt.Printf("%-20s %-25s %-15s\n", info.serviceName, fmt.Sprintf("%s:%d", config.KubernetesIp, info.proxyPort), "")
+		fmt.Printf("%-20s %-25s %-15s\n", info.serviceName, fmt.Sprintf("%s:%d", config.KubernetesIp, info.proxyPort),
+			fmt.Sprintf("%dms", info.delay.Abs().Microseconds()))
 	}
 }
 
@@ -230,6 +234,42 @@ func (cli *AgentClient) findPingPort(svcName string) int32 {
 		}
 	}
 	return port
+}
+
+func (cli *AgentClient) getPingDelay(port int32) (time.Duration, error) {
+	serverAddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", config.KubernetesIp, port))
+	if err != nil {
+		fmt.Println("Error resolving server address:", err)
+		return 0, err
+	}
+
+	conn, err := net.DialUDP("udp", nil, serverAddr)
+	if err != nil {
+		fmt.Println("Error connecting to server:", err)
+		return 0, err
+	}
+	defer conn.Close()
+
+	message := []byte("ping")
+	start := time.Now()
+
+	_, err = conn.Write(message)
+	if err != nil {
+		fmt.Println("Error sending ping:", err)
+		return 0, err
+	}
+
+	buffer := make([]byte, 1024)
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second)) // Set read timeout
+
+	_, err = conn.Read(buffer)
+	if err != nil {
+		fmt.Println("Error receiving pong:", err)
+		return 0, err
+	}
+
+	elapsed := time.Since(start)
+	return elapsed, nil
 }
 
 func (cli *AgentClient) connectToService(svcName string) {
@@ -304,64 +344,6 @@ func (cli *AgentClient) sendFile(filePath string) {
 		line := scanner.Text()
 		util.SendNetMessage(cli.conn, config.ClientData, line)
 	}
-}
-
-func (cli *AgentClient) pingServer(svcName string) {
-
-	found := false
-	var nodePort int32
-svcloop:
-	for _, svc := range cli.k8sSvc {
-		if svc.SvcName == svcName {
-			for _, portInfo := range svc.Ports {
-				if portInfo.Name == "ping-port" {
-					found = true
-					nodePort = portInfo.NodePort
-					break svcloop
-				}
-			}
-		}
-	}
-	if !found {
-		fmt.Printf("service %s does not exist, please choose a valid service", svcName)
-		return
-	}
-
-	fmt.Printf("connect to %s:%d", config.KubernetesIp, nodePort)
-	serverAddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", config.KubernetesIp, nodePort))
-	if err != nil {
-		fmt.Println("Error resolving server address:", err)
-		return
-	}
-
-	conn, err := net.DialUDP("udp", nil, serverAddr)
-	if err != nil {
-		fmt.Println("Error connecting to server:", err)
-		return
-	}
-	defer conn.Close()
-
-	message := []byte("ping")
-	start := time.Now()
-
-	_, err = conn.Write(message)
-	if err != nil {
-		fmt.Println("Error sending ping:", err)
-		return
-	}
-
-	buffer := make([]byte, 1024)
-	conn.SetReadDeadline(time.Now().Add(2 * time.Second)) // Set read timeout
-
-	_, err = conn.Read(buffer)
-	if err != nil {
-		fmt.Println("Error receiving pong:", err)
-		return
-	}
-
-	elapsed := time.Since(start)
-	fmt.Println("Ping response:", string(buffer))
-	fmt.Println("Round trip time:", elapsed)
 }
 
 func (cli *AgentClient) fetchClientData(clientId string) {
