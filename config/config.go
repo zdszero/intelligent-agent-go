@@ -16,9 +16,11 @@ const (
 	DataTransferPort = 8082
 	PingPort         = 8083
 
-	Namespace         = "smart-agent"
-	EtcdClientMapName = "client-map"
-	KubernetesIp      = "192.168.49.2"
+	Namespace            = "smart-agent"
+	EtcdClientMapName    = "client-map"
+	KubernetesIp         = "192.168.49.2"
+	ProxyServicePrefix   = "proxy-service"
+	ClusterServicePrefix = "cluster-service"
 
 	RedisPort = 7777
 )

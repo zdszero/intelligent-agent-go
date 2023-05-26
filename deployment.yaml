@@ -1,17 +1,17 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: my-agent-deployment
+  name: proxy-deployment
   namespace: smart-agent
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: my-agent
+      app: proxy-app
   template:
     metadata:
       labels:
-        app: my-agent
+        app: proxy-app
     spec:
       containers:
         - name: my-agent
@@ -29,11 +29,11 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: my-agent-service
+  name: proxy-service
   namespace: smart-agent
 spec:
   selector:
-    app: my-agent
+    app: proxy-app
   type: NodePort
   ports:
     - name: "client-port"
@@ -53,7 +53,7 @@ metadata:
   namespace: smart-agent
 spec:
   selector:
-    app: my-agent
+    app: proxy-app
   type: ClusterIP
   ports:
     - name: "cluster-port"

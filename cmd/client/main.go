@@ -21,6 +21,8 @@ type ServerInfo struct {
 	transferIp  string
 	serviceIp   string
 	serviceName string
+	proxyPort int32
+	pingPort int32
 	delay int
 }
 
@@ -158,19 +160,26 @@ func (cli *AgentClient) showService() {
 			log.Println("Atoi Error:", err)
 			continue
 		}
-		if strings.HasPrefix(svc.SvcName, "my-agent-service") {
+		if strings.HasPrefix(svc.SvcName, config.ProxyServicePrefix) {
 			serverInfo[lastDigit].serviceIp = svc.ClusterIp
 			serverInfo[lastDigit].serviceName = svc.SvcName
-		} else if strings.HasPrefix(svc.SvcName, "cluster-service") {
+			for _, portInfo := range svc.Ports {
+				if portInfo.Name == "client-port" {
+					serverInfo[lastDigit].proxyPort = portInfo.NodePort
+				} else if portInfo.Name == "ping-port" {
+					serverInfo[lastDigit].pingPort = portInfo.Port
+				}
+			}
+		} else if strings.HasPrefix(svc.SvcName,config.ClusterServicePrefix) {
 			serverInfo[lastDigit].transferIp = svc.ClusterIp
 		}
 	}
 	cli.serverInfo = serverInfo
 	headers := []string{"Service Name", "ClusterIp", "Delay"}
 	fmt.Printf("%-20s %-20s %-15s\n", headers[0], headers[1], headers[2])
-	fmt.Println(strings.Repeat("-", 55))
+	fmt.Println(strings.Repeat("-", 60))
 	for _, info := range serverInfo {
-		fmt.Printf("%-20s %-20s %-15s\n", info.serviceName, info.transferIp, "")
+		fmt.Printf("%-20s %-25s %-15s\n", info.serviceName, fmt.Sprintf("%s:%d", config.KubernetesIp, info.proxyPort), "")
 	}
 }
 
@@ -190,30 +199,34 @@ func (cli *AgentClient) findTransferIp(svcName string) string {
 	return transferIp
 }
 
-func (cli *AgentClient) findServicePort(svcName string, portName string) int32 {
+func (cli *AgentClient) findProxyPort(svcName string) int32 {
 	var port int32
-	portLoop:
-	for _, svc := range cli.k8sSvc {
-		if svc.SvcName == svcName {
-			for _, portInfo := range svc.Ports {
-				if portInfo.Name == portName {
-					port = portInfo.NodePort
-					break portLoop
-				}
-			}
+	for _, info := range cli.serverInfo {
+		if info.serviceName == svcName {
+			port = info.proxyPort
+		}
+	}
+	return port
+}
+
+func (cli *AgentClient) findPingPort(svcName string) int32 {
+	var port int32
+	for _, info := range cli.serverInfo {
+		if info.serviceName == svcName {
+			port = info.pingPort
 		}
 	}
 	return port
 }
 
 func (cli *AgentClient) connectToService(svcName string) {
-	nodePort := cli.findServicePort(svcName, "client-port")
+	proxyPort := cli.findProxyPort(svcName)
 	clusterIp := cli.findTransferIp(svcName)
 
 	cli.prevClusterIp = cli.currClusterIp
 	cli.currClusterIp = clusterIp
 	fmt.Printf("change cluster ip from %s to %s\n", cli.prevClusterIp, cli.currClusterIp)
-	cli.connectToIpPort(config.KubernetesIp, nodePort)
+	cli.connectToIpPort(config.KubernetesIp, proxyPort)
 	cli.k8sCli.EtcdPut(cli.clientId, clusterIp)
 }
 
@@ -229,6 +242,7 @@ func (cli *AgentClient) connectToIpPort(ip string, port int32) {
 	fmt.Printf("connect to %s:%d\n", ip, port)
 
 	sockfile, conn := util.CreateMptcpConnection(ip, port)
+	// TODO: handle conn == nil
 	defer sockfile.Close()
 
 	if cli.conn != nil {
