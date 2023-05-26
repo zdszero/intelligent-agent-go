@@ -21,19 +21,19 @@ type ServerInfo struct {
 	transferIp  string
 	serviceIp   string
 	serviceName string
-	proxyPort int32
-	pingPort int32
-	delay int
+	proxyPort   int32
+	pingPort    int32
+	delay       int
 }
 
 type AgentClient struct {
-	clientId      string
-	conn          net.Conn
-	k8sCli        service.K8SClient
-	k8sSvc        []service.Service
-	serverInfo    []ServerInfo
-	prevClusterIp string
-	currClusterIp string
+	clientId         string
+	conn             net.Conn
+	k8sCli           service.K8SClient
+	k8sSvc           []service.Service
+	serverInfo       []ServerInfo
+	prevClusterIp    string
+	currClusterIp    string
 }
 
 func main() {
@@ -52,6 +52,7 @@ func main() {
 	eofCh := make(chan bool, 1)
 	signal.Notify(interruptChan, syscall.SIGINT, syscall.SIGTERM)
 
+	go servicePoller(cli)
 	go repl(cli, eofCh)
 
 	select {
@@ -61,12 +62,14 @@ func main() {
 }
 
 func newAgentClient(clientId string) AgentClient {
-	return AgentClient{
-		clientId:      clientId,
-		conn:          nil,
-		k8sCli:        *service.NewK8SClient(""),
-		prevClusterIp: "",
+	cli := AgentClient{
+		clientId:         clientId,
+		conn:             nil,
+		k8sCli:           *service.NewK8SClient(""),
+		prevClusterIp:    "",
 	}
+	cli.updateServerInfo()
+	return cli
 }
 
 func repl(cli AgentClient, eofCh chan bool) {
@@ -148,7 +151,14 @@ The commands and arguments are:
 	fmt.Println(help)
 }
 
-func (cli *AgentClient) showService() {
+func servicePoller(cli AgentClient) {
+	for {
+		time.Sleep(time.Second * 10)
+		cli.updateServerInfo()
+	}
+}
+
+func (cli *AgentClient) updateServerInfo() {
 	cli.k8sSvc = cli.k8sCli.GetNamespaceServices(config.Namespace)
 	serverNum := len(cli.k8sSvc) / 2
 	serverInfo := make([]ServerInfo, serverNum)
@@ -170,15 +180,18 @@ func (cli *AgentClient) showService() {
 					serverInfo[lastDigit].pingPort = portInfo.Port
 				}
 			}
-		} else if strings.HasPrefix(svc.SvcName,config.ClusterServicePrefix) {
+		} else if strings.HasPrefix(svc.SvcName, config.ClusterServicePrefix) {
 			serverInfo[lastDigit].transferIp = svc.ClusterIp
 		}
 	}
 	cli.serverInfo = serverInfo
-	headers := []string{"Service Name", "ClusterIp", "Delay"}
+}
+
+func (cli *AgentClient) showService() {
+	headers := []string{"Service Name", "Proxy IP", "Delay"}
 	fmt.Printf("%-20s %-20s %-15s\n", headers[0], headers[1], headers[2])
 	fmt.Println(strings.Repeat("-", 60))
-	for _, info := range serverInfo {
+	for _, info := range cli.serverInfo {
 		fmt.Printf("%-20s %-25s %-15s\n", info.serviceName, fmt.Sprintf("%s:%d", config.KubernetesIp, info.proxyPort), "")
 	}
 }
@@ -265,7 +278,7 @@ func (cli *AgentClient) connectToIpPort(ip string, port int32) {
 }
 
 func (cli *AgentClient) disconnect() {
-	if (cli.conn != nil) {
+	if cli.conn != nil {
 		util.SendNetMessage(cli.conn, config.ClientExit, "")
 		cli.conn.Close()
 	}
