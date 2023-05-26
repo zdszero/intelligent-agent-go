@@ -1,10 +1,18 @@
 package main
 
 import (
-	"smart-agent/config"
 	"testing"
 )
 
-func TestPing(t *testing.T) {
-	pingServer("127.0.0.1", config.PingPort)
+func TestDataTransfer(t *testing.T) {
+	cli := newAgentClient("dingzf")
+	cli.showService()
+	cli.connectToService("my-agent-service1")
+	cli.sendData("hello")
+	cli.sendData("world")
+	cli.sendData("end")
+	cli.fetchClientData("dingzf")
+	cli.connectToService("my-agent-service2")
+	cli.fetchClientData("dingzf")
+	cli.disconnect()
 }

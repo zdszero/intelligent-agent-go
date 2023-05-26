@@ -22,7 +22,7 @@ func RecvNetMessage(conn net.Conn) (uint32, string) {
 		for totalRead < total {
 			n, err := conn.Read(buffer[totalRead:])
 			if err != nil {
-				log.Fatalln("Failed	to read data from client")
+				log.Fatalln("Failed to read data from client:", err)
 			}
 			totalRead += uint32(n)
 		}

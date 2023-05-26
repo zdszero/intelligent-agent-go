@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"flag"
 	"fmt"
+	"log"
 	"net"
 	"os"
 	"os/signal"
@@ -16,11 +17,19 @@ import (
 	"time"
 )
 
+type ServerInfo struct {
+	transferIp  string
+	serviceIp   string
+	serviceName string
+	delay int
+}
+
 type AgentClient struct {
 	clientId      string
 	conn          net.Conn
 	k8sCli        service.K8SClient
 	k8sSvc        []service.Service
+	serverInfo    []ServerInfo
 	prevClusterIp string
 	currClusterIp string
 }
@@ -35,12 +44,7 @@ func main() {
 		return
 	}
 
-	cli := AgentClient{
-		clientId:      *clientId,
-		conn:          nil,
-		k8sCli:        *service.NewK8SClient(""),
-		prevClusterIp: "",
-	}
+	cli := newAgentClient(*clientId)
 
 	interruptChan := make(chan os.Signal, 1)
 	eofCh := make(chan bool, 1)
@@ -51,6 +55,15 @@ func main() {
 	select {
 	case <-interruptChan:
 	case <-eofCh:
+	}
+}
+
+func newAgentClient(clientId string) AgentClient {
+	return AgentClient{
+		clientId:      clientId,
+		conn:          nil,
+		k8sCli:        *service.NewK8SClient(""),
+		prevClusterIp: "",
 	}
 }
 
@@ -76,9 +89,7 @@ func repl(cli AgentClient, eofCh chan bool) {
 		case ".help":
 			printHelp()
 		case ".exit":
-			if cli.conn != nil {
-				util.SendNetMessage(cli.conn, config.ClientExit, "")
-			}
+			cli.disconnect()
 			eofCh <- true
 			return
 		case ".service":
@@ -88,6 +99,7 @@ func repl(cli AgentClient, eofCh chan bool) {
 			cli.connectToService(svcName)
 			fmt.Println("successfully connected")
 		case ".connectto":
+			// not exposed to help, only for debugging
 			arg := tokens[1]
 			parts := strings.Split(arg, ":")
 			ip := parts[0]
@@ -95,12 +107,10 @@ func repl(cli AgentClient, eofCh chan bool) {
 			if err != nil {
 				fmt.Println("Error:", err)
 			}
-			cli.connectToIpPort(ip, int32(port))
+			cli.debugConnect(ip, int32(port))
 			fmt.Println("successfully connected")
 		case ".send":
-			if cli.conn != nil {
-				util.SendNetMessage(cli.conn, config.ClientData, tokens[1])
-			}
+			cli.sendData(tokens[1])
 		case ".sendfile":
 			cli.sendFile(tokens[1])
 		case ".ping":
@@ -136,46 +146,83 @@ The commands and arguments are:
 	fmt.Println(help)
 }
 
-func (cli *AgentClient) pullService() {
-	cli.k8sSvc = cli.k8sCli.GetNamespaceServices(config.Namespace)
-}
-
 func (cli *AgentClient) showService() {
-	cli.pullService()
+	cli.k8sSvc = cli.k8sCli.GetNamespaceServices(config.Namespace)
+	serverNum := len(cli.k8sSvc) / 2
+	serverInfo := make([]ServerInfo, serverNum)
+	for _, svc := range cli.k8sSvc {
+		lastChar := svc.SvcName[len(svc.SvcName)-1]
+		lastDigit, err := strconv.Atoi(string(lastChar))
+		lastDigit--
+		if err != nil {
+			log.Println("Atoi Error:", err)
+			continue
+		}
+		if strings.HasPrefix(svc.SvcName, "my-agent-service") {
+			serverInfo[lastDigit].serviceIp = svc.ClusterIp
+			serverInfo[lastDigit].serviceName = svc.SvcName
+		} else if strings.HasPrefix(svc.SvcName, "cluster-service") {
+			serverInfo[lastDigit].transferIp = svc.ClusterIp
+		}
+	}
+	cli.serverInfo = serverInfo
 	headers := []string{"Service Name", "ClusterIp", "Delay"}
 	fmt.Printf("%-20s %-20s %-15s\n", headers[0], headers[1], headers[2])
 	fmt.Println(strings.Repeat("-", 55))
-	for _, svc := range cli.k8sSvc {
-		fmt.Printf("%-20s %-20s %-15s\n", svc.SvcName, svc.ClusterIp, "")
+	for _, info := range serverInfo {
+		fmt.Printf("%-20s %-20s %-15s\n", info.serviceName, info.transferIp, "")
 	}
 }
 
-func (cli *AgentClient) connectToService(svcName string) {
-	found := false
-	var nodePort int32
-	var clusterIp string
-svcloop:
+func (cli *AgentClient) sendData(data string) {
+	if cli.conn != nil {
+		util.SendNetMessage(cli.conn, config.ClientData, data)
+	}
+}
+
+func (cli *AgentClient) findTransferIp(svcName string) string {
+	var transferIp string
+	for _, info := range cli.serverInfo {
+		if info.serviceName == svcName {
+			transferIp = info.transferIp
+		}
+	}
+	return transferIp
+}
+
+func (cli *AgentClient) findServicePort(svcName string, portName string) int32 {
+	var port int32
+	portLoop:
 	for _, svc := range cli.k8sSvc {
 		if svc.SvcName == svcName {
 			for _, portInfo := range svc.Ports {
-				if portInfo.Name == "client-port" {
-					found = true
-					nodePort = portInfo.NodePort
-					clusterIp = svc.ClusterIp
-					break svcloop
+				if portInfo.Name == portName {
+					port = portInfo.NodePort
+					break portLoop
 				}
 			}
 		}
 	}
-	if !found {
-		fmt.Printf("service %s does not exist, please choose a valid service", svcName)
-		return
-	}
+	return port
+}
+
+func (cli *AgentClient) connectToService(svcName string) {
+	nodePort := cli.findServicePort(svcName, "client-port")
+	clusterIp := cli.findTransferIp(svcName)
 
 	cli.prevClusterIp = cli.currClusterIp
-	cli.connectToIpPort(config.KubernetesIp, nodePort)
 	cli.currClusterIp = clusterIp
+	fmt.Printf("change cluster ip from %s to %s\n", cli.prevClusterIp, cli.currClusterIp)
+	cli.connectToIpPort(config.KubernetesIp, nodePort)
 	cli.k8sCli.EtcdPut(cli.clientId, clusterIp)
+}
+
+// used for local debugging
+func (cli *AgentClient) debugConnect(ip string, port int32) {
+	cli.prevClusterIp = cli.currClusterIp
+	cli.currClusterIp = ip
+	fmt.Printf("change cluster ip from %s to %s\n", cli.prevClusterIp, cli.currClusterIp)
+	cli.connectToIpPort(ip, port)
 }
 
 func (cli *AgentClient) connectToIpPort(ip string, port int32) {
@@ -186,14 +233,27 @@ func (cli *AgentClient) connectToIpPort(ip string, port int32) {
 
 	if cli.conn != nil {
 		util.SendNetMessage(cli.conn, config.ClientExit, "")
+		cli.conn.Close()
 	}
-	cli.conn = conn
-	util.SendNetMessage(cli.conn, config.ClientId, cli.clientId)
-	util.SendNetMessage(cli.conn, config.ClusterIp, cli.prevClusterIp)
-	finished, _ := util.RecvNetMessage(cli.conn)
+	fmt.Printf("send clientid %s to new conn\n", cli.clientId)
+	util.SendNetMessage(conn, config.ClientId, cli.clientId)
+	fmt.Printf("send curr cluster ip %s to new conn\n", cli.currClusterIp)
+	util.SendNetMessage(conn, config.ClusterIp, cli.currClusterIp)
+	fmt.Printf("send previous cluster ip %s to new conn\n", cli.prevClusterIp)
+	util.SendNetMessage(conn, config.ClusterIp, cli.prevClusterIp)
+	finished, _ := util.RecvNetMessage(conn)
 	if finished != config.TransferFinished {
 		fmt.Println("Fail to receive TransferFinished after sending ClientId")
 		os.Exit(1)
+	}
+	fmt.Println("server has fetched old data")
+	cli.conn = conn
+}
+
+func (cli *AgentClient) disconnect() {
+	if (cli.conn != nil) {
+		util.SendNetMessage(cli.conn, config.ClientExit, "")
+		cli.conn.Close()
 	}
 }
 

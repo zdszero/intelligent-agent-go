@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log"
 	"net"
-	"os"
 	"smart-agent/config"
 	"smart-agent/util"
 	"sync"
@@ -34,11 +33,9 @@ func main() {
 	}
 	log.Println("Connected to Redis:", pong)
 
-	clusterIP := getClusterIp()
-	log.Println("agent server cluster ip:", clusterIP)
 	ser := AgentServer{
 		redisCli:    redisCli,
-		myClusterIp: clusterIP,
+		myClusterIp: "",
 	}
 
 	var wg sync.WaitGroup
@@ -46,11 +43,10 @@ func main() {
 	go func() {
 		defer wg.Done()
 		listener := util.CreateMptcpListener(config.ClientServePort)
-		// defer listener.Close()
+		defer listener.Close()
 		// Accept and handle client connections
 		for {
 			conn, err := listener.Accept()
-			log.Println("Accept connection from:", conn)
 			if err != nil {
 				log.Println("Failed to accept client connection:", err)
 				continue
@@ -112,30 +108,30 @@ func main() {
 	wg.Wait()
 }
 
-func getClusterIp() string {
-	var clusterIp string
-	for i := 1; i <= 20; i++ {
-		clusterIp = os.Getenv(fmt.Sprintf("MY_AGENT_SERVICE%d_SERVICE_HOST", i))
-		if clusterIp != "" {
-			break
-		}
-	}
-	return clusterIp
-}
-
 func (ser *AgentServer) handleClient(conn net.Conn) {
 	defer conn.Close()
 
+	fmt.Println("handle connection", conn)
 	var clientId string
 	for {
 		cmd, data := util.RecvNetMessage(conn)
 		if cmd == config.ClientId {
-			log.Printf("Client %s Enter", data)
+			log.Printf("%s Enter", data)
 			clientId = data
-			_, clusterIp := util.RecvNetMessage(conn)
-			if clusterIp != "" && clusterIp != ser.myClusterIp {
-				ser.pushFetchedData(clientId, clusterIp)
+			_, myClusterIp := util.RecvNetMessage(conn)
+			if ser.myClusterIp == "" {
+				ser.myClusterIp = myClusterIp
+				log.Printf("my cluster ip = %s\n", ser.myClusterIp)
 			}
+			_, prevClusterIp := util.RecvNetMessage(conn)
+			log.Printf("%s previous cluster ip: %s\n", clientId, prevClusterIp)
+			if prevClusterIp != "" && prevClusterIp != ser.myClusterIp {
+				for _, data := range ser.fetchData(clientId, prevClusterIp) {
+					log.Println("rpush", clientId, data)
+					ser.redisCli.RPush(context.Background(), clientId, data)
+				}
+			}
+			log.Println("sending transfer finish to client")
 			util.SendNetMessage(conn, config.TransferFinished, "")
 		} else if cmd == config.ClientData {
 			log.Println("rpush", clientId, data)
@@ -145,7 +141,7 @@ func (ser *AgentServer) handleClient(conn net.Conn) {
 				return
 			}
 		} else if cmd == config.ClientExit {
-			log.Printf("Client %s Exit", clientId)
+			log.Printf("%s Exit", clientId)
 			break
 		} else if cmd == config.FetchClientData {
 			targetClientId := data
@@ -169,6 +165,10 @@ func (ser *AgentServer) fetchData(clientId string, clusterIp string) []string {
 	}
 	log.Printf("start fetching data for %s from %s:%d\n", clientId, clusterIp, config.DataTransferPort)
 	sockfile, conn := util.CreateMptcpConnection(clusterIp, config.DataTransferPort)
+	if conn == nil {
+		log.Println("Failed to create connection when fetching data")
+		return []string{}
+	}
 	defer sockfile.Close()
 	util.SendNetMessage(conn, config.ClientId, clientId)
 	dataset := []string{}
@@ -184,13 +184,10 @@ func (ser *AgentServer) fetchData(clientId string, clusterIp string) []string {
 	return dataset
 }
 
-func (ser *AgentServer) pushFetchedData(clientId string, clusterIp string) {
-	for _, data := range ser.fetchData(clientId, clusterIp) {
-		ser.redisCli.RPush(context.Background(), clientId, data)
-	}
-}
-
 func (ser *AgentServer) handleTransfer(conn net.Conn) {
+	defer conn.Close()
+
+	log.Println("handle transfer:", conn)
 	cmd, clientId := util.RecvNetMessage(conn)
 	if cmd != config.ClientId {
 		log.Fatalln("Error: expected client id in the beginning of transfer")
