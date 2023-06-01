@@ -1,7 +1,17 @@
 #! /bin/bash
 
 printHelp() {
-    echo "Usage: ./run.sh [build|show|clean|log|ssh]"
+    echo 'Usage: ./run.sh [build|show|clean|log|ssh]'
+    echo '  ./run.sh build n'
+    echo '      build and run n proxy agents in k8s'
+    echo '  ./run.sh show'
+    echo '      display all services and deployments in target namespace'
+    echo '  ./run.sh clean'
+    echo '      clean all services and deployments in k8s'
+    echo '  ./run.sh log i'
+    echo "      display the ith agent's log"
+    echo '  ./run.sh ssh i'
+    echo "      use ssh to connect into the ith agent"
 }
 
 DEPLOY="proxy-deployment"
