@@ -1,33 +1,58 @@
 package main
 
 import (
+	"fmt"
 	"smart-agent/config"
 	"testing"
+	"time"
 )
 
-func TestDataTransfer(t *testing.T) {
-	cli := newAgentClient("dingzf")
-	cli.connectToService(config.ProxyServicePrefix + "1")
-	cli.sendData("hello")
-	cli.sendData("world")
-	cli.sendData("end")
-	cli.fetchClientData("dingzf")
-	cli.connectToService(config.ProxyServicePrefix + "2")
-	cli.fetchClientData("dingzf")
-	cli.disconnect()
+func TestSimple(t *testing.T) {
+		receiver := newAgentClient("receiver")
+		receiver.setRole("receiver", "sender")
+		receiver.debugConnect("172.16.1.62", config.ClientServePort)
+		fmt.Println("receiver connect finished")
+		go func() {
+			receiver.roleTask()
+		}()
+
+		sender := newAgentClient("sender")
+		sender.setRole("sender", "receiver")
+		sender.debugConnect("172.16.1.147", config.ClientServePort)
+		sender.roleTask()
+		sender.sendData("nihao")
+		sender.sendData("test")
+		sender.sendData("after")
+		time.Sleep(time.Second * 3)
+		sender.disconnect()
 }
 
-func TestFetchOtherData(t *testing.T) {
-	cli := newAgentClient("dingzf")
-	cli.connectToService(config.ProxyServicePrefix + "1")
-	cli.sendData("dingzf1")
-	cli.sendData("dingzf2")
-	cli2 := newAgentClient("chenjw")
-	cli2.connectToService(config.ProxyServicePrefix + "2")
-	cli2.sendData("chenjw1")
-	cli2.sendData("chenjw2")
-	cli.fetchClientData("chenjw")
-	cli2.fetchClientData("dingzf")
-	cli.disconnect()
-	cli2.disconnect()
+func TestSendRecv(t *testing.T) {
+	senderCh := make(chan bool)
+	receiverCh := make(chan bool)
+	go func() {
+		sender := newAgentClient("sender")
+		sender.setRole("sender", "receiver")
+		sender.debugConnect("172.16.1.147", config.ClientServePort)
+		fmt.Println("sender connect finished")
+		sender.roleTask()
+		sender.sendData("nihao")
+		sender.sendData("test")
+		time.Sleep(time.Second * 2)
+		sender.sendData("after")
+		sender.disconnect()
+		senderCh <- true
+	}()
+	go func() {
+		receiver := newAgentClient("receiver")
+		receiver.setRole("receiver", "sender")
+		time.Sleep(time.Second * 1)
+		receiver.debugConnect("172.16.1.62", config.ClientServePort)
+		fmt.Println("receiver connect finished")
+		receiver.roleTask()
+		time.Sleep(time.Second * 4)
+		receiverCh <- true
+	}()
+	<-senderCh
+	<-receiverCh
 }

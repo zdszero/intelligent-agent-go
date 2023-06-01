@@ -34,10 +34,14 @@ type AgentClient struct {
 	serverInfo    []ServerInfo
 	prevClusterIp string
 	currClusterIp string
+	role          string
+	peerId        string
 }
 
 func main() {
 	clientId := flag.String("client", "", "Client ID")
+	sendTo := flag.String("sendto", "", "Receiver Client ID")
+	recvFrom := flag.String("recvfrom", "", "Sender Client ID")
 	flag.Parse()
 
 	// Check if the input file flag is provided
@@ -45,8 +49,17 @@ func main() {
 		fmt.Println("Client Id is required.")
 		return
 	}
-
+	if *sendTo != "" && *recvFrom != "" {
+		fmt.Println("Can not be sender and receiver at the same time")
+		return
+	}
 	cli := newAgentClient(*clientId)
+	cli.updateServerInfo()
+	if *sendTo != "" {
+		cli.setRole("sender", *sendTo)
+	} else if *recvFrom != "" {
+		cli.setRole("receiver", *recvFrom)
+	}
 
 	interruptChan := make(chan os.Signal, 1)
 	eofCh := make(chan bool, 1)
@@ -68,7 +81,6 @@ func newAgentClient(clientId string) AgentClient {
 		k8sCli:        *service.NewK8SClient(""),
 		prevClusterIp: "",
 	}
-	cli.updateServerInfo()
 	return cli
 }
 
@@ -155,6 +167,11 @@ func servicePoller(cli AgentClient) {
 	}
 }
 
+func (cli *AgentClient) setRole(role string, peer string) {
+	cli.role = role
+	cli.peerId = peer
+}
+
 func (cli *AgentClient) updateServerInfo() {
 	cli.k8sSvc = cli.k8sCli.GetNamespaceServices(config.Namespace)
 	serverNum := len(cli.k8sSvc) / 2
@@ -178,7 +195,7 @@ func (cli *AgentClient) updateServerInfo() {
 					serverInfo[lastDigit].pingPort = pingPort
 					serverInfo[lastDigit].delay, err = cli.getPingDelay(pingPort)
 					if err != nil {
-						fmt.Println("fail to ping server on port %d\n", pingPort)
+						fmt.Printf("fail to ping server on port %d\n", pingPort)
 					}
 				}
 			}
@@ -280,15 +297,69 @@ func (cli *AgentClient) connectToService(svcName string) {
 	cli.currClusterIp = clusterIp
 	fmt.Printf("change cluster ip from %s to %s\n", cli.prevClusterIp, cli.currClusterIp)
 	cli.connectToIpPort(config.KubernetesIp, proxyPort)
-	cli.k8sCli.EtcdPut(cli.clientId, clusterIp)
 }
 
 // used for local debugging
 func (cli *AgentClient) debugConnect(ip string, port int32) {
+	cli.k8sCli.EtcdDelete(cli.clientId)
 	cli.prevClusterIp = cli.currClusterIp
 	cli.currClusterIp = ip
 	fmt.Printf("change cluster ip from %s to %s\n", cli.prevClusterIp, cli.currClusterIp)
 	cli.connectToIpPort(ip, port)
+}
+
+func tryFunc(n int, f func() error) error {
+	var err error
+	for i := 0; i < n; i++ {
+		err = f()
+		if err == nil {
+			break
+		}
+		time.Sleep(time.Millisecond * 200)
+	}
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func (cli *AgentClient) roleTask() {
+	err := tryFunc(3, func() error {
+		return cli.k8sCli.EtcdPut(cli.clientId, cli.currClusterIp)
+	})
+	if err != nil {
+		fmt.Println("failed to put cluster ip:", err)
+		os.Exit(1)
+	}
+	if cli.role == "sender" {
+		go func() {
+			fmt.Println("role task!!!")
+			for {
+				peerClusterIp, err := cli.k8sCli.EtcdGet(cli.peerId)
+				fmt.Printf("%s:%s\n", cli.peerId, peerClusterIp)
+				if err != nil {
+					fmt.Println("Failed to get peer ip:", err)
+					os.Exit(1)
+				}
+				if peerClusterIp != "" {
+					fmt.Printf("send receiver addr %s to server\n", peerClusterIp)
+					util.SendNetMessage(cli.conn, config.ClusterIp, peerClusterIp)
+					break
+				}
+				time.Sleep(time.Second * 1)
+			}
+		}()
+	} else if cli.role == "receiver" {
+		fmt.Println("receiving data:")
+		for {
+			cmd, data := util.RecvNetMessage(cli.conn)
+			if cmd == config.ClientData {
+				fmt.Println(data)
+			} else if cmd == config.TransferEnd {
+				break
+			}
+		}
+	}
 }
 
 func (cli *AgentClient) connectToIpPort(ip string, port int32) {
@@ -302,11 +373,10 @@ func (cli *AgentClient) connectToIpPort(ip string, port int32) {
 		util.SendNetMessage(cli.conn, config.ClientExit, "")
 		cli.conn.Close()
 	}
-	fmt.Printf("send clientid %s to new conn\n", cli.clientId)
 	util.SendNetMessage(conn, config.ClientId, cli.clientId)
-	fmt.Printf("send curr cluster ip %s to new conn\n", cli.currClusterIp)
+	util.SendNetMessage(conn, config.ClientType, cli.role)
+	util.SendNetMessage(conn, config.ClientId, cli.peerId)
 	util.SendNetMessage(conn, config.ClusterIp, cli.currClusterIp)
-	fmt.Printf("send previous cluster ip %s to new conn\n", cli.prevClusterIp)
 	util.SendNetMessage(conn, config.ClusterIp, cli.prevClusterIp)
 	finished, _ := util.RecvNetMessage(conn)
 	if finished != config.TransferFinished {

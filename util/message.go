@@ -7,6 +7,9 @@ import (
 )
 
 func SendNetMessage(conn net.Conn, cmd uint32, data string) {
+	if conn == nil {
+		log.Panicln("conn cannot be nil")
+	}
 	totalLength := 4 + 4 + len(data)
 	buf := make([]byte, totalLength)
 	binary.LittleEndian.PutUint32(buf, uint32(totalLength-4))
@@ -16,13 +19,16 @@ func SendNetMessage(conn net.Conn, cmd uint32, data string) {
 }
 
 func RecvNetMessage(conn net.Conn) (uint32, string) {
+	if conn == nil {
+		log.Panicln("conn cannot be nil")
+	}
 	readConn := func(total uint32) []byte {
 		buffer := make([]byte, total)
 		var totalRead uint32 = 0
 		for totalRead < total {
 			n, err := conn.Read(buffer[totalRead:])
 			if err != nil {
-				log.Fatalln("Failed to read data from client:", err)
+				log.Panicln("Failed to read data from conn:", err)
 			}
 			totalRead += uint32(n)
 		}

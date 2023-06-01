@@ -2,6 +2,10 @@ package config
 
 const (
 	FetchClientData uint32 = iota
+	FetchOldData
+	SendFreshData
+	// client type
+	ClientType
 	// client settings
 	ClientId
 	ClusterIp
