@@ -30,9 +30,13 @@ func TestSimple(t *testing.T) {
 func TestSendRecv(t *testing.T) {
 	senderCh := make(chan bool)
 	receiverCh := make(chan bool)
+	sender := newAgentClient("sender")
+	sender.setRole("sender", "receiver")
+	receiver := newAgentClient("receiver")
+	receiver.setRole("receiver", "sender")
+	sender.debugCleanup()
+	receiver.debugCleanup()
 	go func() {
-		sender := newAgentClient("sender")
-		sender.setRole("sender", "receiver")
 		sender.debugConnect("172.16.1.147", config.ClientServePort)
 		fmt.Println("sender connect finished")
 		sender.roleTask()
@@ -44,8 +48,6 @@ func TestSendRecv(t *testing.T) {
 		senderCh <- true
 	}()
 	go func() {
-		receiver := newAgentClient("receiver")
-		receiver.setRole("receiver", "sender")
 		time.Sleep(time.Second * 1)
 		receiver.debugConnect("172.16.1.62", config.ClientServePort)
 		fmt.Println("receiver connect finished")

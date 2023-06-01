@@ -84,6 +84,22 @@ func newAgentClient(clientId string) AgentClient {
 	return cli
 }
 
+
+func tryFunc(n int, f func() error) error {
+	var err error
+	for i := 0; i < n; i++ {
+		err = f()
+		if err == nil {
+			break
+		}
+		time.Sleep(time.Millisecond * 200)
+	}
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
 func repl(cli AgentClient, eofCh chan bool) {
 	fmt.Println("Welcome to Client REPL! Type '.help' for available commands.")
 	scanner := bufio.NewScanner(os.Stdin)
@@ -301,26 +317,20 @@ func (cli *AgentClient) connectToService(svcName string) {
 
 // used for local debugging
 func (cli *AgentClient) debugConnect(ip string, port int32) {
-	cli.k8sCli.EtcdDelete(cli.clientId)
 	cli.prevClusterIp = cli.currClusterIp
 	cli.currClusterIp = ip
 	fmt.Printf("change cluster ip from %s to %s\n", cli.prevClusterIp, cli.currClusterIp)
 	cli.connectToIpPort(ip, port)
 }
 
-func tryFunc(n int, f func() error) error {
-	var err error
-	for i := 0; i < n; i++ {
-		err = f()
-		if err == nil {
-			break
-		}
-		time.Sleep(time.Millisecond * 200)
-	}
+func (cli *AgentClient) debugCleanup() {
+	err := tryFunc(3, func() error {
+		return cli.k8sCli.EtcdDelete(cli.clientId)
+	})
 	if err != nil {
-		return err
+		fmt.Println("failed to clean:", err)
+		os.Exit(1)
 	}
-	return nil
 }
 
 func (cli *AgentClient) roleTask() {
@@ -333,10 +343,8 @@ func (cli *AgentClient) roleTask() {
 	}
 	if cli.role == "sender" {
 		go func() {
-			fmt.Println("role task!!!")
 			for {
 				peerClusterIp, err := cli.k8sCli.EtcdGet(cli.peerId)
-				fmt.Printf("%s:%s\n", cli.peerId, peerClusterIp)
 				if err != nil {
 					fmt.Println("Failed to get peer ip:", err)
 					os.Exit(1)
@@ -346,7 +354,7 @@ func (cli *AgentClient) roleTask() {
 					util.SendNetMessage(cli.conn, config.ClusterIp, peerClusterIp)
 					break
 				}
-				time.Sleep(time.Second * 1)
+				time.Sleep(time.Millisecond * 100)
 			}
 		}()
 	} else if cli.role == "receiver" {
