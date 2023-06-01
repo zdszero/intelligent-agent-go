@@ -20,6 +20,9 @@ const (
 	DataTransferPort = 8082
 	PingPort         = 8083
 
+	RoleSender   = "sender"
+	RoleReceiver = "receiver"
+
 	Namespace            = "smart-agent"
 	EtcdClientMapName    = "client-map"
 	KubernetesIp         = "192.168.49.2"

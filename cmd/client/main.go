@@ -55,6 +55,7 @@ func main() {
 	}
 	cli := newAgentClient(*clientId)
 	cli.updateServerInfo()
+	cli.etcdCleanup()
 	if *sendTo != "" {
 		cli.setRole("sender", *sendTo)
 	} else if *recvFrom != "" {
@@ -120,7 +121,7 @@ func repl(cli AgentClient, eofCh chan bool) {
 		cmd := tokens[0]
 		switch cmd {
 		case ".help":
-			printHelp()
+			printHelp(cli.role)
 		case ".exit":
 			cli.disconnect()
 			eofCh <- true
@@ -131,17 +132,7 @@ func repl(cli AgentClient, eofCh chan bool) {
 			svcName := tokens[1]
 			cli.connectToService(svcName)
 			fmt.Println("successfully connected")
-		case ".connectto":
-			// not exposed to help, only for debugging
-			arg := tokens[1]
-			parts := strings.Split(arg, ":")
-			ip := parts[0]
-			port, err := strconv.Atoi(parts[1])
-			if err != nil {
-				fmt.Println("Error:", err)
-			}
-			cli.debugConnect(ip, int32(port))
-			fmt.Println("successfully connected")
+			cli.roleTask()
 		case ".send":
 			cli.sendData(tokens[1])
 		case ".sendfile":
@@ -160,9 +151,11 @@ func repl(cli AgentClient, eofCh chan bool) {
 	}
 }
 
-func printHelp() {
-	help := fmt.Sprintf(
-		`Usage:
+func printHelp(role string) {
+	var help string
+	if role == config.RoleSender {
+		help = fmt.Sprintf(
+`Usage:
     %s <command> [arguments]
 The commands and arguments are:
     .help
@@ -173,6 +166,17 @@ The commands and arguments are:
     .sendfile [filePath]
     .fetch    [clientId]
 `, os.Args[0])
+	} else if role == config.RoleReceiver {
+		help = fmt.Sprintf(
+`Usage:
+    %s <command> [arguments]
+The commands and arguments are:
+    .help
+    .exit
+    .service
+    .connect  [serviceName]
+`, os.Args[0])
+	}
 	fmt.Println(help)
 }
 
@@ -323,7 +327,7 @@ func (cli *AgentClient) debugConnect(ip string, port int32) {
 	cli.connectToIpPort(ip, port)
 }
 
-func (cli *AgentClient) debugCleanup() {
+func (cli *AgentClient) etcdCleanup() {
 	err := tryFunc(3, func() error {
 		return cli.k8sCli.EtcdDelete(cli.clientId)
 	})
@@ -341,7 +345,7 @@ func (cli *AgentClient) roleTask() {
 		fmt.Println("failed to put cluster ip:", err)
 		os.Exit(1)
 	}
-	if cli.role == "sender" {
+	if cli.role == config.RoleSender {
 		go func() {
 			for {
 				peerClusterIp, err := cli.k8sCli.EtcdGet(cli.peerId)
@@ -357,16 +361,20 @@ func (cli *AgentClient) roleTask() {
 				time.Sleep(time.Millisecond * 100)
 			}
 		}()
-	} else if cli.role == "receiver" {
+	} else if cli.role == config.RoleReceiver {
 		fmt.Println("receiving data:")
 		for {
 			cmd, data := util.RecvNetMessage(cli.conn)
 			if cmd == config.ClientData {
 				fmt.Println(data)
 			} else if cmd == config.TransferEnd {
+				fmt.Println("receiving data ends")
 				break
 			}
 		}
+	} else {
+		fmt.Println("unknown role type:", cli.role)
+		os.Exit(1)
 	}
 }
 
@@ -374,6 +382,9 @@ func (cli *AgentClient) connectToIpPort(ip string, port int32) {
 	fmt.Printf("connect to %s:%d\n", ip, port)
 
 	sockfile, conn := util.CreateMptcpConnection(ip, port)
+	if conn == nil {
+		os.Exit(1)
+	}
 	// TODO: handle conn == nil
 	defer sockfile.Close()
 

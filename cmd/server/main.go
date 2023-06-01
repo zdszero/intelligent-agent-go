@@ -259,6 +259,7 @@ func (ser *AgentServer) handleTransfer(conn net.Conn) {
 				log.Println("rpush", clientId, data)
 				ser.redisCli.RPush(context.Background(), clientId, data)
 			} else if cmd == config.TransferEnd {
+				log.Printf("relay end")
 				util.SendNetMessage(ser.clientConnMap[clientId], config.TransferEnd, "")
 				ser.receiverWaitCh[clientId] <- true
 				break
