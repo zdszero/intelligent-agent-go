@@ -85,7 +85,6 @@ func newAgentClient(clientId string) AgentClient {
 	return cli
 }
 
-
 func tryFunc(n int, f func() error) error {
 	var err error
 	for i := 0; i < n; i++ {
@@ -155,7 +154,7 @@ func printHelp(role string) {
 	var help string
 	if role == config.RoleSender {
 		help = fmt.Sprintf(
-`Usage:
+			`Usage:
     %s <command> [arguments]
 The commands and arguments are:
     .help
@@ -168,7 +167,7 @@ The commands and arguments are:
 `, os.Args[0])
 	} else if role == config.RoleReceiver {
 		help = fmt.Sprintf(
-`Usage:
+			`Usage:
     %s <command> [arguments]
 The commands and arguments are:
     .help
@@ -182,7 +181,7 @@ The commands and arguments are:
 
 func servicePoller(cli AgentClient) {
 	for {
-		time.Sleep(time.Second * 10)
+		time.Sleep(time.Second * 100)
 		cli.updateServerInfo()
 	}
 }

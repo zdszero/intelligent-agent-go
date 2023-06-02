@@ -3,12 +3,13 @@ package main
 import (
 	"context"
 	"fmt"
-	"github.com/go-redis/redis/v8"
 	"log"
 	"net"
 	"smart-agent/config"
 	"smart-agent/util"
 	"sync"
+
+	"github.com/go-redis/redis/v8"
 )
 
 type AgentServer struct {
@@ -93,13 +94,13 @@ func main() {
 		buffer := make([]byte, 1024)
 
 		for {
-			n, addr, err := conn.ReadFromUDP(buffer)
+			_, addr, err := conn.ReadFromUDP(buffer)
 			if err != nil {
 				log.Println("Error reading message:", err)
 				continue
 			}
 
-			log.Printf("Received ping from %s: %s\n", addr.String(), string(buffer[:n]))
+			// log.Printf("Received ping from %s: %s\n", addr.String(), string(buffer[:n]))
 
 			_, err = conn.WriteToUDP([]byte("pong"), addr)
 			if err != nil {
