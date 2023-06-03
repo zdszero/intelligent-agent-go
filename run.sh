@@ -61,8 +61,12 @@ elif [[ "$1" == "deploy" ]]; then
     num=$2
     for (( i = 1; i <= $num; i++ )); do
         printf "build ${DEPLOY}%d\n" $i
+		deploy_file="deployment.yaml"
+		if [[ $use_k8s -eq 1 ]]; then
+			deploy_file="deployment_k8s.yaml"
+		fi
         deploy_temp=$(mktemp)
-        sed "s/${DEPLOY}/\0${i}/" deployment.yaml > $deploy_temp
+        sed "s/${DEPLOY}/\0${i}/" $deploy_file > $deploy_temp
         sed -i "s/${PROXY_SERVICE}/\0${i}/" $deploy_temp
         sed -i "s/${CLUSTER_SERVICE}/\0${i}/" $deploy_temp
         sed -i "s/${SELECTOR_APP}/\0${i}/" $deploy_temp
