@@ -1,9 +1,11 @@
 #! /bin/bash
 
 printHelp() {
-    echo 'Usage: ./run.sh [build|show|clean|log|ssh]'
-    echo '  ./run.sh build n'
-    echo '      build and run n proxy agents in k8s'
+    echo 'Usage: ./run.sh [build|deploy|show|clean|log|ssh]'
+	echo '  ./run.sh build'
+	echo '      build agent container'
+    echo '  ./run.sh deploy n'
+    echo '      deploy n proxy agents in k8s'
     echo '  ./run.sh show'
     echo '      display all services and deployments in target namespace'
     echo '  ./run.sh clean'
@@ -20,7 +22,16 @@ CLUSTER_SERVICE="cluster-service"
 SELECTOR_APP="proxy-app"
 NAMESPACE="smart-agent"
 CONFIGMAP="client-map"
-K="minikube kubectl --"
+which kubectl
+use_k8s=0
+if [[ $? -eq 0 ]]; then
+	K="kubectl"
+	use_k8s=1
+	echo "use kubernetes"
+else
+	K="minikube kubectl --"
+	echo "use minikube"
+fi
 
 createNsCm() {
     ns_cnt=$($K get ns | grep ${NAMESPACE} | wc -l)
@@ -36,11 +47,16 @@ createNsCm() {
 }
 
 if [[ "$1" == "build" ]]; then
-    echo "Running build operation..."
-    eval $(minikube docker-env)
-    createNsCm
+    echo "Running build container operation..."
+    # eval $(minikube docker-env)
     go build -o server cmd/server/main.go
     docker build -t my-agent .
+	if [[ $use_k8s -eq 1 ]]; then
+		docker save my-agent -o my-agent.tar
+		ctr image import my-agent.tar
+	fi
+elif [[ "$1" == "deploy" ]]; then
+    createNsCm
     num=$2
     for (( i = 1; i <= $num; i++ )); do
         printf "build ${DEPLOY}%d\n" $i
