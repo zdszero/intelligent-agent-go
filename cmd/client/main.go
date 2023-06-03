@@ -4,10 +4,10 @@ import (
 	"bufio"
 	"flag"
 	"fmt"
-	"log"
 	"net"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"smart-agent/config"
 	"smart-agent/service"
 	"smart-agent/util"
@@ -15,6 +15,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"k8s.io/client-go/util/homedir"
 )
 
 type ServerInfo struct {
@@ -32,6 +34,7 @@ type AgentClient struct {
 	k8sCli        service.K8SClient
 	k8sSvc        []service.Service
 	serverInfo    []ServerInfo
+	k8sIp         string
 	prevClusterIp string
 	currClusterIp string
 	role          string
@@ -42,6 +45,7 @@ func main() {
 	clientId := flag.String("client", "", "Client ID")
 	sendTo := flag.String("sendto", "", "Receiver Client ID")
 	recvFrom := flag.String("recvfrom", "", "Sender Client ID")
+	kubeConfig := flag.String("config", "", "Kubernetes Config Path")
 	flag.Parse()
 
 	// Check if the input file flag is provided
@@ -53,13 +57,14 @@ func main() {
 		fmt.Println("Can not be sender and receiver at the same time")
 		return
 	}
-	cli := newAgentClient(*clientId)
+	fmt.Println("kubeconfig:", *kubeConfig)
+	cli := newAgentClient(*clientId, *kubeConfig)
 	cli.updateServerInfo()
 	cli.etcdCleanup()
 	if *sendTo != "" {
-		cli.setRole("sender", *sendTo)
+		cli.setRole(config.RoleSender, *sendTo)
 	} else if *recvFrom != "" {
-		cli.setRole("receiver", *recvFrom)
+		cli.setRole(config.RoleReceiver, *recvFrom)
 	}
 
 	interruptChan := make(chan os.Signal, 1)
@@ -74,13 +79,20 @@ func main() {
 	case <-eofCh:
 	}
 }
-
-func newAgentClient(clientId string) AgentClient {
+func newAgentClient(clientId string, kubeconfig string) AgentClient {
+	var configpath string
+	if kubeconfig == "" {
+		home := homedir.HomeDir()
+	   	configpath = filepath.Join(home, ".kube", "config")
+	} else {
+		configpath = kubeconfig
+	}
 	cli := AgentClient{
 		clientId:      clientId,
 		conn:          nil,
-		k8sCli:        *service.NewK8SClient(""),
+		k8sCli:        *service.NewK8SClient(configpath),
 		prevClusterIp: "",
+		k8sIp:         util.GetServerIpFromYaml(configpath),
 	}
 	return cli
 }
@@ -200,7 +212,7 @@ func (cli *AgentClient) updateServerInfo() {
 		lastDigit, err := strconv.Atoi(string(lastChar))
 		lastDigit--
 		if err != nil {
-			log.Println("Atoi Error:", err)
+			fmt.Println("Atoi Error:", err)
 			continue
 		}
 		if strings.HasPrefix(svc.SvcName, config.ProxyServicePrefix) {
@@ -231,7 +243,7 @@ func (cli *AgentClient) showService() {
 	fmt.Printf("%-20s %-25s %-15s\n", headers[0], headers[1], headers[2])
 	fmt.Println(strings.Repeat("-", 60))
 	for _, info := range cli.serverInfo {
-		fmt.Printf("%-20s %-25s %-15s\n", info.serviceName, fmt.Sprintf("%s:%d", config.KubernetesIp, info.proxyPort),
+		fmt.Printf("%-20s %-25s %-15s\n", info.serviceName, fmt.Sprintf("%s:%d", cli.k8sIp, info.proxyPort),
 			fmt.Sprintf("%dms", info.delay.Abs().Microseconds()))
 	}
 }
@@ -273,7 +285,7 @@ func (cli *AgentClient) findPingPort(svcName string) int32 {
 }
 
 func (cli *AgentClient) getPingDelay(port int32) (time.Duration, error) {
-	serverAddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", config.KubernetesIp, port))
+	serverAddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", cli.k8sIp, port))
 	if err != nil {
 		fmt.Println("Error resolving server address:", err)
 		return 0, err
@@ -315,7 +327,7 @@ func (cli *AgentClient) connectToService(svcName string) {
 	cli.prevClusterIp = cli.currClusterIp
 	cli.currClusterIp = clusterIp
 	fmt.Printf("change cluster ip from %s to %s\n", cli.prevClusterIp, cli.currClusterIp)
-	cli.connectToIpPort(config.KubernetesIp, proxyPort)
+	cli.connectToIpPort(cli.k8sIp, proxyPort)
 }
 
 // used for local debugging

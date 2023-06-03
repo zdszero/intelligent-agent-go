@@ -4,7 +4,6 @@ import (
 	"context"
 	"log"
 	"os"
-	"path/filepath"
 	"smart-agent/config"
 	"strings"
 
@@ -12,7 +11,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
-	"k8s.io/client-go/util/homedir"
 )
 
 type K8SClient struct {
@@ -35,12 +33,7 @@ type Service struct {
 
 func NewK8SClient(kubeconfig string) *K8SClient {
 	loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
-	if kubeconfig == "" {
-		home := homedir.HomeDir()
-		loadingRules.ExplicitPath = filepath.Join(home, ".kube", "config")
-	} else {
-		loadingRules.ExplicitPath = kubeconfig
-	}
+	loadingRules.ExplicitPath = kubeconfig
 	configOverrides := &clientcmd.ConfigOverrides{}
 	kubeConfig := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(loadingRules, configOverrides)
 

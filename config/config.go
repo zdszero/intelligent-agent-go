@@ -25,7 +25,6 @@ const (
 
 	Namespace            = "smart-agent"
 	EtcdClientMapName    = "client-map"
-	KubernetesIp         = "192.168.49.2"
 	ProxyServicePrefix   = "proxy-service"
 	ClusterServicePrefix = "cluster-service"
 

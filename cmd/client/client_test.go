@@ -8,7 +8,7 @@ import (
 )
 
 func TestSimple(t *testing.T) {
-		receiver := newAgentClient("receiver")
+		receiver := newAgentClient("receiver", "")
 		receiver.setRole("receiver", "sender")
 		receiver.debugConnect("172.16.1.62", config.ClientServePort)
 		fmt.Println("receiver connect finished")
@@ -16,7 +16,7 @@ func TestSimple(t *testing.T) {
 			receiver.roleTask()
 		}()
 
-		sender := newAgentClient("sender")
+		sender := newAgentClient("sender", "")
 		sender.setRole("sender", "receiver")
 		sender.debugConnect("172.16.1.147", config.ClientServePort)
 		sender.roleTask()
@@ -30,9 +30,9 @@ func TestSimple(t *testing.T) {
 func TestSendRecv(t *testing.T) {
 	senderCh := make(chan bool)
 	receiverCh := make(chan bool)
-	sender := newAgentClient("sender")
+	sender := newAgentClient("sender", "")
 	sender.setRole("sender", "receiver")
-	receiver := newAgentClient("receiver")
+	receiver := newAgentClient("receiver", "")
 	receiver.setRole("receiver", "sender")
 	sender.etcdCleanup()
 	receiver.etcdCleanup()
@@ -62,10 +62,10 @@ func TestSendRecv(t *testing.T) {
 func TestSendRecvCluster(t *testing.T) {
 	senderCh := make(chan bool)
 	receiverCh := make(chan bool)
-	sender := newAgentClient("sender")
+	sender := newAgentClient("sender", "")
 	sender.updateServerInfo()
 	sender.setRole(config.RoleSender, "receiver")
-	receiver := newAgentClient("receiver")
+	receiver := newAgentClient("receiver", "")
 	receiver.updateServerInfo()
 	receiver.setRole(config.RoleReceiver, "sender")
 	sender.etcdCleanup()

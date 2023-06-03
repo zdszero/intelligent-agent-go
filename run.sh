@@ -22,9 +22,8 @@ CLUSTER_SERVICE="cluster-service"
 SELECTOR_APP="proxy-app"
 NAMESPACE="smart-agent"
 CONFIGMAP="client-map"
-which kubectl
 use_k8s=0
-if [[ $? -eq 0 ]]; then
+if command -v kubectl >/dev/null 2>&1; then
 	K="kubectl"
 	use_k8s=1
 	echo "use kubernetes"
@@ -48,7 +47,9 @@ createNsCm() {
 
 if [[ "$1" == "build" ]]; then
     echo "Running build container operation..."
-    # eval $(minikube docker-env)
+	if [[ $use_k8s -eq 0 ]]; then
+        eval $(minikube docker-env)
+	fi
     go build -o server cmd/server/main.go
     docker build -t my-agent .
 	if [[ $use_k8s -eq 1 ]]; then
