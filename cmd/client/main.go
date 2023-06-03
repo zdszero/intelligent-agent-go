@@ -244,7 +244,7 @@ func (cli *AgentClient) showService() {
 	fmt.Println(strings.Repeat("-", 60))
 	for _, info := range cli.serverInfo {
 		fmt.Printf("%-20s %-25s %-15s\n", info.serviceName, fmt.Sprintf("%s:%d", cli.k8sIp, info.proxyPort),
-			fmt.Sprintf("%dms", info.delay.Abs().Microseconds()))
+			fmt.Sprintf("%.3fms", float64(info.delay.Abs().Microseconds()) / 1000))
 	}
 }
 
