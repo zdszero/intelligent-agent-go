@@ -1,22 +1,36 @@
-### dependencies
+### run servers on minikube
 
-- `go 1.20`
-- `minikube`
+- install `minikube`
+- install `go 1.20`
 
-### build & run
-
-```
+```sh
 minikube start
 eval $(minikube docker-env)
 # show help message using ./run.sh help
-# build target docker container and run 3 agents in k8s cluster
-./run.sh build 3
+./run.sh help
+# build target docker container
+./run.sh build
+# deploy 3 proxy agents in k8s cluster
+./run.sh deploy 3
+```
 
+### run servers on kubernetes
+
+```sh
+# deploy n proxy agents in kubernetes
+./run.sh deploy n
+# clean all proxy agents
+./run.sh clean
+```
+
+### run client
+
+```sh
 # build and run client
 go build -o client cmd/client/main.go
 # create two clients, cli1 send message to cli2
-./client -client cli1 --sendto cli2
-./client -client cli2 --recvfrom cli1
+./client -client cli1 --sendto cli2 -config ~/.kube/config
+./client -client cli2 --recvfrom cli1 -config ~/.kube/config
 # running these programs will display you with a REPL, input .help for help message
 ```
 

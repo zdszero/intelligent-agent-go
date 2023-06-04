@@ -52,16 +52,12 @@ if [[ "$1" == "build" ]]; then
 	fi
     go build -o server cmd/server/main.go
     docker build -t my-agent .
-	if [[ $use_k8s -eq 1 ]]; then
-		docker save my-agent -o my-agent.tar
-		ctr image import my-agent.tar
-	fi
 elif [[ "$1" == "deploy" ]]; then
     createNsCm
     num=$2
     for (( i = 1; i <= $num; i++ )); do
         printf "build ${DEPLOY}%d\n" $i
-		deploy_file="deployment.yaml"
+		deploy_file="deployment_minikube.yaml"
 		if [[ $use_k8s -eq 1 ]]; then
 			deploy_file="deployment_k8s.yaml"
 		fi
