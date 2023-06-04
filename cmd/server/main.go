@@ -13,13 +13,18 @@ import (
 	"github.com/go-redis/redis/v8"
 )
 
+type SenderRecord struct {
+	receiverId string
+	priority   int
+	conn       net.Conn
+	waitCh     chan bool
+}
+
 type AgentServer struct {
-	redisCli       *redis.Client
-	myClusterIp    string
-	clientConnMap  map[string]net.Conn
-	receiverWaitCh map[string]chan bool
-	priorityMap    map[string]int
-	mu             sync.Mutex
+	redisCli    *redis.Client
+	myClusterIp string
+	senderMap   map[string]SenderRecord
+	mu          sync.Mutex
 }
 
 func main() {
@@ -41,9 +46,7 @@ func main() {
 	ser := AgentServer{
 		redisCli:       redisCli,
 		myClusterIp:    "",
-		clientConnMap:  make(map[string]net.Conn),
-		receiverWaitCh: make(map[string]chan bool),
-		priorityMap:    make(map[string]int),
+		senderMap: make(map[string]SenderRecord),
 	}
 
 	var wg sync.WaitGroup
@@ -122,23 +125,28 @@ func checkCmdType(cmd uint32, target uint32) {
 	}
 }
 
-func (ser *AgentServer) isFirstPriority(clientId string, priority int) bool {
+func (ser *AgentServer) isFirstPriority(senderId string) bool {
 	ser.mu.Lock()
 	defer ser.mu.Unlock()
 
+	sr, ok := ser.senderMap[senderId]
+	if !ok {
+		log.Fatalf("sender %s record is not created in isFirstPriority")
+	}
+
 	maxPri := -1
-	for cli, pri := range ser.priorityMap {
-		if cli == clientId {
+	for cli, rec := range ser.senderMap {
+		if cli == senderId || rec.receiverId != sr.receiverId {
 			continue
 		}
-		if pri > maxPri {
-			maxPri = pri
+		if rec.priority > maxPri {
+			maxPri = rec.priority
 		}
 	}
 	if maxPri == -1 {
 		return true
 	}
-	return priority >= maxPri
+	return sr.priority >= maxPri
 }
 
 func (ser *AgentServer) handleClient(conn net.Conn) {
@@ -155,7 +163,9 @@ func (ser *AgentServer) handleClient(conn net.Conn) {
 		ser.myClusterIp = myClusterIp
 		log.Printf("my cluster ip = %s\n", ser.myClusterIp)
 	}
-	ser.priorityMap[myClientId] = myPri
+	sr, _ := ser.senderMap[myClientId]
+	sr.priority = myPri
+	ser.senderMap[myClientId] = sr
 	ser.mu.Unlock()
 
 	_, prevClusterIp := util.RecvNetMessage(conn)
@@ -217,7 +227,7 @@ func (ser *AgentServer) handleClient(conn net.Conn) {
 				// if the peer connected into k8s, send all buffered data
 				peerClusterIp = data
 				log.Println("receiver cluster ip:", peerClusterIp)
-				if ser.isFirstPriority(myClientId, myPri) {
+				if ser.isFirstPriority(myClientId) {
 					sendBuffferedData()
 				}
 			} else if cmd == config.ClientData {
@@ -226,7 +236,7 @@ func (ser *AgentServer) handleClient(conn net.Conn) {
 					log.Println("buffer data (receiver not connected):", data)
 					bufferedData = append(bufferedData, data)
 				} else {
-					if ser.isFirstPriority(myClientId, myPri) {
+					if ser.isFirstPriority(myClientId) {
 						sendBuffferedData()
 						transferData(data)
 					} else {
@@ -240,7 +250,9 @@ func (ser *AgentServer) handleClient(conn net.Conn) {
 				// TODO: sender disconnect before receiver connects
 				endTransfer()
 				ser.mu.Lock()
-				delete(ser.priorityMap, myClientId)
+				sr, _ := ser.senderMap[myClientId]
+				sr.priority = 0
+				ser.senderMap[myClientId] = sr
 				ser.mu.Unlock()
 				break
 			} else if cmd == config.FetchClientData {
@@ -269,13 +281,16 @@ func (ser *AgentServer) handleClient(conn net.Conn) {
 				log.Printf("set conn map [%s]\n", senderId)
 				ch := make(chan bool)
 				ser.mu.Lock()
-				ser.clientConnMap[senderId] = conn
-				ser.receiverWaitCh[senderId] = ch
+				sr, _ := ser.senderMap[senderId]
+				sr.conn = conn
+				sr.waitCh = ch
+				ser.senderMap[senderId] = sr
 				ser.mu.Unlock()
+
 				<-ch
+
 				ser.mu.Lock()
-				delete(ser.receiverWaitCh, senderId)
-				delete(ser.clientConnMap, senderId)
+				delete(ser.senderMap, senderId)
 				ser.mu.Unlock()
 				log.Printf("sender %s finsihed\n", senderId)
 			}(senderId)
@@ -344,13 +359,18 @@ func (ser *AgentServer) handleTransfer(conn net.Conn) {
 			cmd, data := util.RecvNetMessage(conn)
 			if cmd == config.ClientData {
 				log.Printf("relay data %s to receiver\n", data)
-				util.SendNetMessage(ser.clientConnMap[clientId], config.ClientData, data)
+				ser.mu.Lock()
+				util.SendNetMessage(ser.senderMap[clientId].conn, config.ClientData, data)
+				ser.mu.Unlock()
 				log.Println("rpush", clientId, data)
 				ser.redisCli.RPush(context.Background(), clientId, data)
 			} else if cmd == config.TransferEnd {
 				log.Printf("relay end")
-				util.SendNetMessage(ser.clientConnMap[clientId], config.TransferEnd, clientId)
-				ser.receiverWaitCh[clientId] <- true
+				ser.mu.Lock()
+				sr := ser.senderMap[clientId]
+				util.SendNetMessage(sr.conn, config.TransferEnd, clientId)
+				sr.waitCh <- true
+				ser.mu.Unlock()
 				break
 			}
 		}
