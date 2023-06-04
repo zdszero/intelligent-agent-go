@@ -50,7 +50,9 @@ if [[ "$1" == "build" ]]; then
 	if [[ $use_k8s -eq 0 ]]; then
         eval $(minikube docker-env)
 	fi
+    echo "build server..."
     go build -o server cmd/server/main.go
+    echo "build docker image..."
     docker build -t my-agent .
 elif [[ "$1" == "deploy" ]]; then
     createNsCm

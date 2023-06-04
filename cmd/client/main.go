@@ -38,14 +38,30 @@ type AgentClient struct {
 	prevClusterIp string
 	currClusterIp string
 	role          string
-	peerId        string
+	receiverId    string
+	senderIds     []string
+	priority      int
+}
+
+type stringSlice []string
+
+func (f *stringSlice) String() string {
+	return fmt.Sprintf("%v", []string(*f))
+}
+
+func (f *stringSlice) Set(value string) error {
+	*f = append(*f, value)
+	return nil
 }
 
 func main() {
+	var priority int
+	var recvFroms stringSlice
 	clientId := flag.String("client", "", "Client ID")
 	sendTo := flag.String("sendto", "", "Receiver Client ID")
-	recvFrom := flag.String("recvfrom", "", "Sender Client ID")
+	flag.Var(&recvFroms, "recvfrom", "Sender Client IDs")
 	kubeConfig := flag.String("config", "", "Kubernetes Config Path")
+	flag.IntVar(&priority, "priority", 0, "Client Priority")
 	flag.Parse()
 
 	// Check if the input file flag is provided
@@ -53,18 +69,17 @@ func main() {
 		fmt.Println("Client Id is required.")
 		return
 	}
-	if *sendTo != "" && *recvFrom != "" {
+	if *sendTo != "" && len(recvFroms) > 0 {
 		fmt.Println("Can not be sender and receiver at the same time")
 		return
 	}
-	fmt.Println("kubeconfig:", *kubeConfig)
-	cli := newAgentClient(*clientId, *kubeConfig)
+	cli := newAgentClient(*clientId, *kubeConfig, priority)
 	cli.updateServerInfo()
 	cli.etcdCleanup()
 	if *sendTo != "" {
-		cli.setRole(config.RoleSender, *sendTo)
-	} else if *recvFrom != "" {
-		cli.setRole(config.RoleReceiver, *recvFrom)
+		cli.setSender(*sendTo)
+	} else if len(recvFroms) > 0 {
+		cli.setReceiver(recvFroms)
 	}
 
 	interruptChan := make(chan os.Signal, 1)
@@ -79,20 +94,24 @@ func main() {
 	case <-eofCh:
 	}
 }
-func newAgentClient(clientId string, kubeconfig string) AgentClient {
+func newAgentClient(clientId string, kubeconfig string, priority int) AgentClient {
 	var configpath string
 	if kubeconfig == "" {
 		home := homedir.HomeDir()
-	   	configpath = filepath.Join(home, ".kube", "config")
+		configpath = filepath.Join(home, ".kube", "config")
 	} else {
 		configpath = kubeconfig
 	}
+	ip := util.GetServerIpFromYaml(configpath)
+	fmt.Println("config path:", configpath)
+	fmt.Println("cluster ip:", ip)
 	cli := AgentClient{
 		clientId:      clientId,
 		conn:          nil,
 		k8sCli:        *service.NewK8SClient(configpath),
 		prevClusterIp: "",
-		k8sIp:         util.GetServerIpFromYaml(configpath),
+		k8sIp:         ip,
+		priority:      priority,
 	}
 	return cli
 }
@@ -198,9 +217,14 @@ func servicePoller(cli AgentClient) {
 	}
 }
 
-func (cli *AgentClient) setRole(role string, peer string) {
-	cli.role = role
-	cli.peerId = peer
+func (cli *AgentClient) setSender(peer string) {
+	cli.role = config.RoleSender
+	cli.receiverId = peer
+}
+
+func (cli *AgentClient) setReceiver(senders []string) {
+	cli.role = config.RoleReceiver
+	cli.senderIds = senders
 }
 
 func (cli *AgentClient) updateServerInfo() {
@@ -244,7 +268,7 @@ func (cli *AgentClient) showService() {
 	fmt.Println(strings.Repeat("-", 60))
 	for _, info := range cli.serverInfo {
 		fmt.Printf("%-20s %-25s %-15s\n", info.serviceName, fmt.Sprintf("%s:%d", cli.k8sIp, info.proxyPort),
-			fmt.Sprintf("%.3fms", float64(info.delay.Abs().Microseconds()) / 1000))
+			fmt.Sprintf("%.3fms", float64(info.delay.Abs().Microseconds())/1000))
 	}
 }
 
@@ -359,7 +383,7 @@ func (cli *AgentClient) roleTask() {
 	if cli.role == config.RoleSender {
 		go func() {
 			for {
-				peerClusterIp, err := cli.k8sCli.EtcdGet(cli.peerId)
+				peerClusterIp, err := cli.k8sCli.EtcdGet(cli.receiverId)
 				if err != nil {
 					fmt.Println("Failed to get peer ip:", err)
 					os.Exit(1)
@@ -373,14 +397,23 @@ func (cli *AgentClient) roleTask() {
 			}
 		}()
 	} else if cli.role == config.RoleReceiver {
+		util.SendNetMessage(cli.conn, config.RecvfromNum, strconv.Itoa(len(cli.senderIds)))
+		for _, senderId := range cli.senderIds {
+			util.SendNetMessage(cli.conn, config.ClientId, senderId)
+		}
 		fmt.Println("receiving data:")
+		endCount := 0
 		for {
 			cmd, data := util.RecvNetMessage(cli.conn)
 			if cmd == config.ClientData {
-				fmt.Println(data)
+				fmt.Println("data:", data)
 			} else if cmd == config.TransferEnd {
-				fmt.Println("receiving data ends")
-				break
+				endCount++
+				fmt.Println("receive all data from:", data)
+				if endCount >= len(cli.senderIds) {
+					fmt.Println("receiving data ends")
+					break
+				}
 			}
 		}
 	} else {
@@ -405,7 +438,7 @@ func (cli *AgentClient) connectToIpPort(ip string, port int32) {
 	}
 	util.SendNetMessage(conn, config.ClientId, cli.clientId)
 	util.SendNetMessage(conn, config.ClientType, cli.role)
-	util.SendNetMessage(conn, config.ClientId, cli.peerId)
+	util.SendNetMessage(conn, config.ClientPriority, strconv.Itoa(cli.priority))
 	util.SendNetMessage(conn, config.ClusterIp, cli.currClusterIp)
 	util.SendNetMessage(conn, config.ClusterIp, cli.prevClusterIp)
 	finished, _ := util.RecvNetMessage(conn)

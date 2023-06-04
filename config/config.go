@@ -6,6 +6,8 @@ const (
 	SendFreshData
 	// client type
 	ClientType
+	ClientPriority
+	RecvfromNum
 	// client settings
 	ClientId
 	ClusterIp
