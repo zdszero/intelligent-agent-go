@@ -15,9 +15,14 @@ import (
 	"github.com/go-redis/redis/v8"
 )
 
+type SenderBuffer struct {
+	priority      int
+	triggerSendCh chan bool
+	receiverId    string
+}
+
+// Record used for receiver to receive data from many senders
 type SenderRecord struct {
-	receiverId string
-	priority   int
 	conn       net.Conn
 	waitCh     chan bool
 }
@@ -26,6 +31,7 @@ type AgentServer struct {
 	redisCli    *redis.Client
 	myClusterIp string
 	senderMap   map[string]SenderRecord
+	bufferMap   map[string]SenderBuffer
 	k8sCli      *service.K8SClient
 	mu          sync.Mutex
 }
@@ -50,6 +56,7 @@ func main() {
 		redisCli:    redisCli,
 		myClusterIp: "",
 		senderMap:   make(map[string]SenderRecord),
+		bufferMap:   make(map[string]SenderBuffer),
 		k8sCli:      service.NewK8SClientInCluster(),
 	}
 
@@ -134,24 +141,24 @@ func (ser *AgentServer) isFirstPriority(senderId string) bool {
 	ser.mu.Lock()
 	defer ser.mu.Unlock()
 
-	sr, ok := ser.senderMap[senderId]
+	sbf, ok := ser.bufferMap[senderId]
 	if !ok {
 		log.Fatalf("sender %s record is not created in isFirstPriority", senderId)
 	}
 
 	maxPri := -1
-	for cli, rec := range ser.senderMap {
-		if cli == senderId || rec.receiverId != sr.receiverId {
+	for cli, bf := range ser.bufferMap {
+		if cli == senderId || bf.receiverId != sbf.receiverId {
 			continue
 		}
-		if rec.priority > maxPri {
-			maxPri = rec.priority
+		if bf.priority > maxPri {
+			maxPri = bf.priority
 		}
 	}
 	if maxPri == -1 {
 		return true
 	}
-	return sr.priority >= maxPri
+	return sbf.priority >= maxPri
 }
 
 func (ser *AgentServer) handleClient(conn net.Conn) {
@@ -160,19 +167,13 @@ func (ser *AgentServer) handleClient(conn net.Conn) {
 	_, cliId := util.RecvNetMessage(conn)
 	_, clientType := util.RecvNetMessage(conn)
 	_, cliPriorityStr := util.RecvNetMessage(conn)
-	myPri, _ := strconv.Atoi(cliPriorityStr)
+	priority, _ := strconv.Atoi(cliPriorityStr)
 	_, myClusterIp := util.RecvNetMessage(conn)
 
-	ser.mu.Lock()
 	if ser.myClusterIp == "" {
 		ser.myClusterIp = myClusterIp
 		log.Printf("my cluster ip = %s\n", ser.myClusterIp)
 	}
-	sr, _ := ser.senderMap[cliId]
-	sr.priority = myPri
-	ser.senderMap[cliId] = sr
-	ser.mu.Unlock()
-
 	_, prevClusterIp := util.RecvNetMessage(conn)
 	// fetch old data
 	if prevClusterIp != "" && prevClusterIp != ser.myClusterIp {
@@ -186,11 +187,20 @@ func (ser *AgentServer) handleClient(conn net.Conn) {
 
 	if clientType == config.RoleSender {
 		log.Println("serve for sender", cliId)
+
+		_, receiverId := util.RecvNetMessage(conn)
+
+		ser.mu.Lock()
+		ser.bufferMap[cliId] = SenderBuffer{
+			priority:      priority,
+			triggerSendCh: make(chan bool),
+			receiverId:    receiverId,
+		}
+		ser.mu.Unlock()
+
 		bufferedData := []string{}
 		var receiverClusterIp string = ""
 		var transferConn net.Conn = nil
-
-		_, receiverId := util.RecvNetMessage(conn)
 
 		beginTransfer := func() {
 			sockfile, tconn := util.CreateMptcpConnection(receiverClusterIp, config.DataTransferPort)
@@ -300,9 +310,7 @@ func (ser *AgentServer) handleClient(conn net.Conn) {
 				default:
 				}
 				ser.mu.Lock()
-				sr, _ := ser.senderMap[cliId]
-				sr.priority = 0
-				ser.senderMap[cliId] = sr
+				delete(ser.bufferMap, cliId)
 				ser.mu.Unlock()
 				log.Printf("sender %s Exit", cliId)
 				break
@@ -332,10 +340,10 @@ func (ser *AgentServer) handleClient(conn net.Conn) {
 				log.Printf("set conn map [%s]\n", senderId)
 				ch := make(chan bool)
 				ser.mu.Lock()
-				sr, _ := ser.senderMap[senderId]
-				sr.conn = conn
-				sr.waitCh = ch
-				ser.senderMap[senderId] = sr
+				ser.senderMap[senderId] = SenderRecord{
+					conn:       conn,
+					waitCh:     ch,
+				}
 				ser.mu.Unlock()
 				<-ch
 				ser.mu.Lock()
