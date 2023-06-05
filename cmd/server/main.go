@@ -147,7 +147,7 @@ func (ser *AgentServer) isFirstPriority(senderId string) bool {
 		log.Fatalf("sender %s record is not created in isFirstPriority", senderId)
 	}
 
-	maxPri := -1
+	maxPri := 0
 	for cli, bf := range ser.bufferMap {
 		if cli == senderId || bf.receiverId != sbf.receiverId {
 			continue
@@ -155,9 +155,6 @@ func (ser *AgentServer) isFirstPriority(senderId string) bool {
 		if bf.priority > maxPri {
 			maxPri = bf.priority
 		}
-	}
-	if maxPri == -1 {
-		return true
 	}
 	return sbf.priority >= maxPri
 }
@@ -169,10 +166,10 @@ func (ser *AgentServer) handleClient(conn net.Conn) {
 	_, clientType := util.RecvNetMessage(conn)
 	_, cliPriorityStr := util.RecvNetMessage(conn)
 	priority, _ := strconv.Atoi(cliPriorityStr)
-	_, myClusterIp := util.RecvNetMessage(conn)
+	_, currClusterIp := util.RecvNetMessage(conn)
 
 	if ser.myClusterIp == "" {
-		ser.myClusterIp = myClusterIp
+		ser.myClusterIp = currClusterIp
 		log.Printf("my cluster ip = %s\n", ser.myClusterIp)
 	}
 	_, prevClusterIp := util.RecvNetMessage(conn)
@@ -183,7 +180,7 @@ func (ser *AgentServer) handleClient(conn net.Conn) {
 			ser.redisCli.RPush(context.Background(), cliId, data)
 		}
 	}
-	log.Println(cliId, clientType, myClusterIp, prevClusterIp)
+	log.Println(cliId, clientType, currClusterIp, prevClusterIp)
 	util.SendNetMessage(conn, config.TransferFinished, "")
 
 	if clientType == config.RoleSender {
@@ -218,30 +215,62 @@ func (ser *AgentServer) handleClient(conn net.Conn) {
 			util.SendNetMessage(transferConn, config.SendFreshData, "")
 			util.SendNetMessage(transferConn, config.ClientId, cliId)
 		}
+		waitUntilConnCreated := func() {
+			for {
+				_, ok := ser.senderMap[cliId]
+				if ok {
+					break
+				}
+				time.Sleep(time.Millisecond * 10)
+			}
+		}
 		endTransfer := func() {
-			if transferConn != nil {
-				util.SendNetMessage(transferConn, config.TransferEnd, "")
+			if receiverClusterIp == "" {
+				log.Fatalln("receiver cluster ip is empty when sending data")
+			}
+			if receiverClusterIp != currClusterIp {
+				if transferConn != nil {
+					util.SendNetMessage(transferConn, config.TransferEnd, "")
+				}
+			} else {
+				waitUntilConnCreated()
+				util.SendNetMessage(ser.senderMap[cliId].conn, config.TransferEnd, cliId)
 			}
 		}
 		sendBuffferedData := func() {
-			if transferConn == nil {
-				beginTransfer()
+			if receiverClusterIp == "" {
+				log.Fatalln("receiver cluster ip is empty when sending data")
 			}
-			if len(bufferedData) == 0 {
-				return
-			}
-			for _, data := range bufferedData {
-				util.SendNetMessage(transferConn, config.ClientData, data)
-				log.Printf("send %s to %s\n", data, receiverClusterIp)
+			if receiverClusterIp != currClusterIp {
+				if transferConn == nil {
+					beginTransfer()
+				}
+				for _, data := range bufferedData {
+					util.SendNetMessage(transferConn, config.ClientData, data)
+					log.Printf("send %s to %s\n", data, receiverClusterIp)
+				}
+			} else {
+				waitUntilConnCreated()
+				for _, data := range bufferedData {
+					util.SendNetMessage(ser.senderMap[cliId].conn, config.ClientData, data)
+				}
 			}
 			bufferedData = []string{}
 		}
 		transferData := func(data string) {
-			if transferConn == nil {
-				beginTransfer()
+			if receiverClusterIp == "" {
+				log.Fatalln("receiver cluster ip is empty when sending data")
 			}
-			log.Printf("send %s to %s\n", data, receiverClusterIp)
-			util.SendNetMessage(transferConn, config.ClientData, data)
+			if receiverClusterIp != currClusterIp {
+				if transferConn == nil {
+					beginTransfer()
+				}
+				log.Printf("send %s to %s\n", data, receiverClusterIp)
+				util.SendNetMessage(transferConn, config.ClientData, data)
+			} else {
+				waitUntilConnCreated()
+				util.SendNetMessage(ser.senderMap[cliId].conn, config.ClientData, data)
+			}
 		}
 
 		// pull receiver cluster ip in a loop
@@ -256,6 +285,7 @@ func (ser *AgentServer) handleClient(conn net.Conn) {
 					time.Sleep(time.Millisecond * 300)
 				} else {
 					receiverClusterIp = ip
+					log.Printf("get receiver %s cluster ip: %s\n", receiverId, receiverClusterIp)
 					select {
 					case triggerSendCh <- true:
 					default:
@@ -275,6 +305,7 @@ func (ser *AgentServer) handleClient(conn net.Conn) {
 					break sendloop
 				}
 				if ser.isFirstPriority(cliId) {
+					log.Println("send buffered data...")
 					sendBuffferedData()
 				}
 				if senderExit {

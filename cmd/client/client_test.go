@@ -27,11 +27,12 @@ func TestSimpleLocal(t *testing.T) {
 	sender.disconnect()
 }
 
-func TestSimple(t *testing.T) {
+func TestSimpleCluster(t *testing.T) {
 	receiver := newAgentClient("receiver", "", 0)
-	receiver.setReceiver([]string{"sender"})
 	receiver.updateServerInfo()
-	receiver.connectToService(config.ProxyServicePrefix+"1")
+	receiver.setReceiver([]string{"sender"})
+	receiver.etcdCleanup()
+	receiver.connectToService(config.ProxyServicePrefix + "1")
 	fmt.Println("receiver connect finished")
 	go func() {
 		receiver.roleTask()
@@ -40,7 +41,30 @@ func TestSimple(t *testing.T) {
 	sender := newAgentClient("sender", "", 0)
 	sender.setSender("receiver")
 	sender.updateServerInfo()
-	sender.connectToService(config.ProxyServicePrefix+"2")
+	sender.etcdCleanup()
+	sender.connectToService(config.ProxyServicePrefix + "2")
+	sender.roleTask()
+	sender.sendData("nihao")
+	sender.sendData("test")
+	sender.sendData("after")
+	time.Sleep(time.Second * 3)
+	sender.disconnect()
+}
+
+func TestSameAgent(t *testing.T) {
+	receiver := newAgentClient("receiver", "", 0)
+	receiver.setReceiver([]string{"sender"})
+	receiver.updateServerInfo()
+	receiver.connectToService(config.ProxyServicePrefix + "1")
+	fmt.Println("receiver connect finished")
+	go func() {
+		receiver.roleTask()
+	}()
+
+	sender := newAgentClient("sender", "", 0)
+	sender.setSender("receiver")
+	sender.updateServerInfo()
+	sender.connectToService(config.ProxyServicePrefix + "1")
 	sender.roleTask()
 	sender.sendData("nihao")
 	sender.sendData("test")
