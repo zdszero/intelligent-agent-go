@@ -62,7 +62,6 @@ func TestReceiverJoinLater(t *testing.T) {
 	receiver.etcdCleanup()
 	go func() {
 		sender.connectToService(config.ProxyServicePrefix + "1")
-		fmt.Println("sender connect finished")
 		sender.roleTask()
 		sender.sendData("nihao")
 		sender.sendData("test")
@@ -74,14 +73,43 @@ func TestReceiverJoinLater(t *testing.T) {
 	go func() {
 		time.Sleep(time.Second * 1)
 		receiver.connectToService(config.ProxyServicePrefix + "2")
-		fmt.Println("receiver connect finished")
+		fmt.Println("receiver connects ...")
 		receiver.roleTask()
 		time.Sleep(time.Second * 4)
 		receiverCh <- true
 	}()
 	<-senderCh
 	<-receiverCh
+}
 
+func TestReceiverJoinAfterSenderExit(t *testing.T) {
+	senderCh := make(chan bool)
+	receiverCh := make(chan bool)
+	sender := newAgentClient("sender", "", 0)
+	sender.updateServerInfo()
+	sender.setSender("receiver")
+	receiver := newAgentClient("receiver", "", 0)
+	receiver.updateServerInfo()
+	receiver.setReceiver([]string{"sender"})
+	sender.etcdCleanup()
+	receiver.etcdCleanup()
+	go func() {
+		sender.connectToService(config.ProxyServicePrefix + "1")
+		sender.roleTask()
+		sender.sendData("nihao")
+		sender.sendData("test")
+		sender.sendData("after")
+		sender.disconnect()
+		senderCh <- true
+	}()
+	go func() {
+		time.Sleep(time.Second * 2)
+		receiver.connectToService(config.ProxyServicePrefix + "2")
+		receiver.roleTask()
+		receiverCh <- true
+	}()
+	<-senderCh
+	<-receiverCh
 }
 
 func TestPriority(t *testing.T) {

@@ -157,7 +157,7 @@ func (ser *AgentServer) isFirstPriority(senderId string) bool {
 func (ser *AgentServer) handleClient(conn net.Conn) {
 	defer conn.Close()
 
-	_, myClientId := util.RecvNetMessage(conn)
+	_, cliId := util.RecvNetMessage(conn)
 	_, clientType := util.RecvNetMessage(conn)
 	_, cliPriorityStr := util.RecvNetMessage(conn)
 	myPri, _ := strconv.Atoi(cliPriorityStr)
@@ -168,43 +168,29 @@ func (ser *AgentServer) handleClient(conn net.Conn) {
 		ser.myClusterIp = myClusterIp
 		log.Printf("my cluster ip = %s\n", ser.myClusterIp)
 	}
-	sr, _ := ser.senderMap[myClientId]
+	sr, _ := ser.senderMap[cliId]
 	sr.priority = myPri
-	ser.senderMap[myClientId] = sr
+	ser.senderMap[cliId] = sr
 	ser.mu.Unlock()
 
 	_, prevClusterIp := util.RecvNetMessage(conn)
 	// fetch old data
 	if prevClusterIp != "" && prevClusterIp != ser.myClusterIp {
-		for _, data := range ser.fetchData(myClientId, prevClusterIp) {
-			log.Println("rpush", myClientId, data)
-			ser.redisCli.RPush(context.Background(), myClientId, data)
+		for _, data := range ser.fetchData(cliId, prevClusterIp) {
+			log.Println("rpush", cliId, data)
+			ser.redisCli.RPush(context.Background(), cliId, data)
 		}
 	}
-	log.Println(myClientId, clientType, myClusterIp, prevClusterIp)
+	log.Println(cliId, clientType, myClusterIp, prevClusterIp)
 	util.SendNetMessage(conn, config.TransferFinished, "")
 
 	if clientType == config.RoleSender {
-		log.Println("serve for sender", myClientId)
+		log.Println("serve for sender", cliId)
 		bufferedData := []string{}
 		var receiverClusterIp string = ""
 		var transferConn net.Conn = nil
 
 		_, receiverId := util.RecvNetMessage(conn)
-		go func() {
-			for {
-				ip, err := ser.k8sCli.EtcdGet(receiverId)
-				if err != nil {
-					log.Fatalln("Failed to get receiver cluster ip:", err)
-				}
-				if ip == "" {
-					time.Sleep(time.Millisecond * 300)
-				} else {
-					receiverClusterIp = ip
-					break
-				}
-			}
-		}()
 
 		beginTransfer := func() {
 			sockfile, tconn := util.CreateMptcpConnection(receiverClusterIp, config.DataTransferPort)
@@ -214,7 +200,7 @@ func (ser *AgentServer) handleClient(conn net.Conn) {
 			}
 			defer sockfile.Close()
 			util.SendNetMessage(transferConn, config.SendFreshData, "")
-			util.SendNetMessage(transferConn, config.ClientId, myClientId)
+			util.SendNetMessage(transferConn, config.ClientId, cliId)
 		}
 		endTransfer := func() {
 			if transferConn != nil {
@@ -242,6 +228,47 @@ func (ser *AgentServer) handleClient(conn net.Conn) {
 			util.SendNetMessage(transferConn, config.ClientData, data)
 		}
 
+		senderExit := false
+		triggerSendCh := make(chan bool, 1)
+		exitCh := make(chan bool, 1)
+		exitWaitCh := make(chan bool, 1)
+
+		// pull receiver cluster ip in a loop
+		// wait until receiver connects into the cluster
+		go func() {
+			for {
+				ip, err := ser.k8sCli.EtcdGet(receiverId)
+				if err != nil {
+					log.Fatalln("Failed to get receiver cluster ip:", err)
+				}
+				if ip == "" {
+					time.Sleep(time.Millisecond * 300)
+				} else {
+					receiverClusterIp = ip
+					select {
+					case triggerSendCh <- true:
+					default:
+					}
+					break
+				}
+			}
+		}()
+
+		// send buffered data loop
+		go func() {
+			for {
+				select {
+				case <-triggerSendCh:
+				case <-exitCh:
+					break
+				}
+				sendBuffferedData()
+				if senderExit {
+					exitWaitCh <- true
+				}
+			}
+		}()
+
 		for {
 			cmd, data := util.RecvNetMessage(conn)
 			if cmd == config.ClientData {
@@ -250,8 +277,10 @@ func (ser *AgentServer) handleClient(conn net.Conn) {
 					log.Println("buffer data (receiver not connected):", data)
 					bufferedData = append(bufferedData, data)
 				} else {
-					if ser.isFirstPriority(myClientId) {
-						sendBuffferedData()
+					if ser.isFirstPriority(cliId) {
+						for len(bufferedData) > 0 {
+							time.Sleep(time.Millisecond * 10)
+						}
 						transferData(data)
 					} else {
 						// if not the first priority, buffer data
@@ -260,14 +289,22 @@ func (ser *AgentServer) handleClient(conn net.Conn) {
 					}
 				}
 			} else if cmd == config.ClientExit {
-				log.Printf("%s Exit", myClientId)
-				// TODO: sender disconnect before receiver connects
+				// sender disconnect before receiver connects
+				senderExit = true
+				if len(bufferedData) > 0 {
+					<-exitWaitCh
+				}
 				endTransfer()
+				select {
+				case exitCh <- true:
+				default:
+				}
 				ser.mu.Lock()
-				sr, _ := ser.senderMap[myClientId]
+				sr, _ := ser.senderMap[cliId]
 				sr.priority = 0
-				ser.senderMap[myClientId] = sr
+				ser.senderMap[cliId] = sr
 				ser.mu.Unlock()
+				log.Printf("sender %s Exit", cliId)
 				break
 			} else if cmd == config.FetchClientData {
 				targetClientId := data
@@ -286,7 +323,7 @@ func (ser *AgentServer) handleClient(conn net.Conn) {
 			_, senderId := util.RecvNetMessage(conn)
 			senderIds = append(senderIds, senderId)
 		}
-		log.Printf("%s recv from %d senders: %v\n", myClientId, recvNum, senderIds)
+		log.Printf("%s recv from %d senders: %v\n", cliId, recvNum, senderIds)
 		wg := sync.WaitGroup{}
 		wg.Add(len(senderIds))
 		for _, senderId := range senderIds {
@@ -300,9 +337,7 @@ func (ser *AgentServer) handleClient(conn net.Conn) {
 				sr.waitCh = ch
 				ser.senderMap[senderId] = sr
 				ser.mu.Unlock()
-
 				<-ch
-
 				ser.mu.Lock()
 				delete(ser.senderMap, senderId)
 				ser.mu.Unlock()
