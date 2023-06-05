@@ -10,6 +10,7 @@ import (
 	"smart-agent/util"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/go-redis/redis/v8"
 )
@@ -186,11 +187,27 @@ func (ser *AgentServer) handleClient(conn net.Conn) {
 	if clientType == config.RoleSender {
 		log.Println("serve for sender", myClientId)
 		bufferedData := []string{}
-		var peerClusterIp string = ""
+		var receiverClusterIp string = ""
 		var transferConn net.Conn = nil
 
+		_, receiverId := util.RecvNetMessage(conn)
+		go func() {
+			for {
+				ip, err := ser.k8sCli.EtcdGet(receiverId)
+				if err != nil {
+					log.Fatalln("Failed to get receiver cluster ip:", err)
+				}
+				if ip == "" {
+					time.Sleep(time.Millisecond * 300)
+				} else {
+					receiverClusterIp = ip
+					break
+				}
+			}
+		}()
+
 		beginTransfer := func() {
-			sockfile, tconn := util.CreateMptcpConnection(peerClusterIp, config.DataTransferPort)
+			sockfile, tconn := util.CreateMptcpConnection(receiverClusterIp, config.DataTransferPort)
 			transferConn = tconn
 			if conn == nil {
 				log.Fatalln("Failed to create connection when create peer transfer conn")
@@ -213,7 +230,7 @@ func (ser *AgentServer) handleClient(conn net.Conn) {
 			}
 			for _, data := range bufferedData {
 				util.SendNetMessage(transferConn, config.ClientData, data)
-				log.Printf("send %s to %s\n", data, peerClusterIp)
+				log.Printf("send %s to %s\n", data, receiverClusterIp)
 			}
 			bufferedData = []string{}
 		}
@@ -221,22 +238,15 @@ func (ser *AgentServer) handleClient(conn net.Conn) {
 			if transferConn == nil {
 				beginTransfer()
 			}
-			log.Printf("send %s to %s\n", data, peerClusterIp)
+			log.Printf("send %s to %s\n", data, receiverClusterIp)
 			util.SendNetMessage(transferConn, config.ClientData, data)
 		}
 
 		for {
 			cmd, data := util.RecvNetMessage(conn)
-			if cmd == config.ClusterIp {
-				// if the peer connected into k8s, send all buffered data
-				peerClusterIp = data
-				log.Println("receiver cluster ip:", peerClusterIp)
-				if ser.isFirstPriority(myClientId) {
-					sendBuffferedData()
-				}
-			} else if cmd == config.ClientData {
+			if cmd == config.ClientData {
 				// if the peer hasn't connected into k8s, buffer the data first
-				if peerClusterIp == "" {
+				if receiverClusterIp == "" {
 					log.Println("buffer data (receiver not connected):", data)
 					bufferedData = append(bufferedData, data)
 				} else {

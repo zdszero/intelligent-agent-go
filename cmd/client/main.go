@@ -381,21 +381,7 @@ func (cli *AgentClient) roleTask() {
 		os.Exit(1)
 	}
 	if cli.role == config.RoleSender {
-		go func() {
-			for {
-				peerClusterIp, err := cli.k8sCli.EtcdGet(cli.receiverId)
-				if err != nil {
-					fmt.Println("Failed to get peer ip:", err)
-					os.Exit(1)
-				}
-				if peerClusterIp != "" {
-					fmt.Printf("send receiver addr %s to server\n", peerClusterIp)
-					util.SendNetMessage(cli.conn, config.ClusterIp, peerClusterIp)
-					break
-				}
-				time.Sleep(time.Millisecond * 100)
-			}
-		}()
+		util.SendNetMessage(cli.conn, config.ClientId, cli.receiverId)
 	} else if cli.role == config.RoleReceiver {
 		util.SendNetMessage(cli.conn, config.RecvfromNum, strconv.Itoa(len(cli.senderIds)))
 		for _, senderId := range cli.senderIds {
