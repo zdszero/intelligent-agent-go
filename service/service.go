@@ -10,6 +10,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 )
 
@@ -39,13 +40,25 @@ func NewK8SClient(kubeconfig string) *K8SClient {
 
 	config, err := kubeConfig.ClientConfig()
 	if err != nil {
-		log.Printf("Failed to create client config: %v\n", err)
-		os.Exit(1)
+		log.Fatalln("Failed to create client config:", err)
 	}
 	clientset, err := kubernetes.NewForConfig(config)
 	if err != nil {
-		log.Printf("Failed to create clientset: %v\n", err)
-		os.Exit(1)
+		log.Fatalln("Failed to create clientset:", err)
+	}
+	return &K8SClient{
+		cli: clientset,
+	}
+}
+
+func NewK8SClientInCluster() *K8SClient {
+	config, err := rest.InClusterConfig()
+	if err != nil {
+		log.Fatalln("Fail to create in cluster config:", err)
+	}
+	clientset, err := kubernetes.NewForConfig(config)
+	if err != nil {
+		log.Fatalln("Failed to create clientset:", err)
 	}
 	return &K8SClient{
 		cli: clientset,

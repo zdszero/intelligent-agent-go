@@ -6,6 +6,7 @@ import (
 	"log"
 	"net"
 	"smart-agent/config"
+	"smart-agent/service"
 	"smart-agent/util"
 	"strconv"
 	"sync"
@@ -24,6 +25,7 @@ type AgentServer struct {
 	redisCli    *redis.Client
 	myClusterIp string
 	senderMap   map[string]SenderRecord
+	k8sCli      *service.K8SClient
 	mu          sync.Mutex
 }
 
@@ -44,13 +46,15 @@ func main() {
 	log.Println("Connected to Redis:", pong)
 
 	ser := AgentServer{
-		redisCli:       redisCli,
-		myClusterIp:    "",
-		senderMap: make(map[string]SenderRecord),
+		redisCli:    redisCli,
+		myClusterIp: "",
+		senderMap:   make(map[string]SenderRecord),
+		k8sCli:      service.NewK8SClientInCluster(),
 	}
 
 	var wg sync.WaitGroup
 	wg.Add(3)
+
 	go func() {
 		defer wg.Done()
 		listener := util.CreateMptcpListener(config.ClientServePort)
@@ -131,7 +135,7 @@ func (ser *AgentServer) isFirstPriority(senderId string) bool {
 
 	sr, ok := ser.senderMap[senderId]
 	if !ok {
-		log.Fatalf("sender %s record is not created in isFirstPriority")
+		log.Fatalf("sender %s record is not created in isFirstPriority", senderId)
 	}
 
 	maxPri := -1

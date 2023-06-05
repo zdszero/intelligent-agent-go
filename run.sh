@@ -1,5 +1,22 @@
 #! /bin/bash
 
+DEPLOY="proxy-deployment"
+PROXY_SERVICE="proxy-service"
+CLUSTER_SERVICE="cluster-service"
+SELECTOR_APP="proxy-app"
+NAMESPACE="smart-agent"
+CONFIGMAP="client-map"
+CLUSTERROLE="configmap-reader"
+use_k8s=0
+if command -v kubectl >/dev/null 2>&1; then
+	K="kubectl"
+	use_k8s=1
+	echo "use kubernetes"
+else
+	K="minikube kubectl --"
+	echo "use minikube"
+fi
+
 printHelp() {
     echo 'Usage: ./run.sh [build|deploy|show|clean|log|ssh]'
 	echo '  ./run.sh build'
@@ -16,23 +33,7 @@ printHelp() {
     echo "      use ssh to connect into the ith agent"
 }
 
-DEPLOY="proxy-deployment"
-PROXY_SERVICE="proxy-service"
-CLUSTER_SERVICE="cluster-service"
-SELECTOR_APP="proxy-app"
-NAMESPACE="smart-agent"
-CONFIGMAP="client-map"
-use_k8s=0
-if command -v kubectl >/dev/null 2>&1; then
-	K="kubectl"
-	use_k8s=1
-	echo "use kubernetes"
-else
-	K="minikube kubectl --"
-	echo "use minikube"
-fi
-
-createNsCm() {
+createResourceNeeded() {
     ns_cnt=$($K get ns | grep ${NAMESPACE} | wc -l)
     if [[ $ns_cnt -eq 0 ]]; then
         echo "create namespace ${NAMESPACE}"
@@ -43,9 +44,14 @@ createNsCm() {
         echo "create configmap ${CONFIGMAP}"
         $K create configmap ${CONFIGMAP} --from-file=configmap.yaml -n ${NAMESPACE}
     fi  
+    rb_cnt=$($K get clusterrole | grep ${CLUSTERROLE} | wc -l)
+    if [[ $rb_cnt -eq 0 ]]; then
+        echo "apply role binding policy"
+        $K apply -f clusterrolebinding.yaml
+    fi
 }
 
-if [[ "$1" == "build" ]]; then
+build() {
     echo "Running build container operation..."
 	if [[ $use_k8s -eq 0 ]]; then
         eval $(minikube docker-env)
@@ -54,10 +60,10 @@ if [[ "$1" == "build" ]]; then
     go build -o server cmd/server/main.go
     echo "build docker image..."
     docker build -t my-agent .
-elif [[ "$1" == "deploy" ]]; then
-    createNsCm
-    num=$2
-    for (( i = 1; i <= $num; i++ )); do
+}
+
+deployNAgents() {
+    for (( i = 1; i <= $1; i++ )); do
         printf "build ${DEPLOY}%d\n" $i
 		deploy_file="deployment_minikube.yaml"
 		if [[ $use_k8s -eq 1 ]]; then
@@ -71,13 +77,11 @@ elif [[ "$1" == "deploy" ]]; then
         $K apply -f $deploy_temp
         rm $deploy_temp
     done
-elif [[ "$1" == "show" ]]; then
-    echo "Services":
-    $K get svc -n ${NAMESPACE}
-    echo "Deployments":
-    $K get deployment -n ${NAMESPACE}
-elif [[ "$1" == "clean" ]]; then
+}
+
+clean() {
     echo "Running clean operation..."
+    echo "delete all deployments and services..."
     running_services=$($K get svc -n $NAMESPACE | grep $PROXY_SERVICE | awk '{print $1}')
     while IFS= read -r service; do
         deploy=$(echo $service | sed 's/service/deployment/')
@@ -88,6 +92,24 @@ elif [[ "$1" == "clean" ]]; then
     while IFS= read -r service; do
         $K delete service $service -n $NAMESPACE
     done <<< $running_services
+    echo "delete configmaps..."
+    $K delete configmap ${CONFIGMAP} -n ${NAMESPACE}
+}
+
+if [[ "$1" == "build" ]]; then
+    build
+elif [[ "$1" == "deploy" ]]; then
+    createResourceNeeded
+    deployNAgents $2
+elif [[ "$1" == "show" ]]; then
+    echo "Services:"
+    $K get svc -n ${NAMESPACE}
+    echo "Deployments:"
+    $K get deployment -n ${NAMESPACE}
+    echo "Configmap:"
+    $K get configmap $CONFIGMAP -n ${NAMESPACE} -o jsonpath='{.data}'
+elif [[ "$1" == "clean" ]]; then
+    clean
 elif [[ "$1" == "log" ]]; then
     [[ $# < 2 ]] && exit 0
     podname=$($K get pods -n ${NAMESPACE} | grep "${DEPLOY}${2}" | awk '{print $1}')

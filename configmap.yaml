@@ -3,3 +3,4 @@ data:
 kind: ConfigMap
 metadata:
   name: client-map
+  namespace: smart-agent
