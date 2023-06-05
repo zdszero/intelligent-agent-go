@@ -16,6 +16,7 @@ import (
 )
 
 type SenderBuffer struct {
+	senderId      string
 	priority      int
 	triggerSendCh chan bool
 	receiverId    string
@@ -23,8 +24,8 @@ type SenderBuffer struct {
 
 // Record used for receiver to receive data from many senders
 type SenderRecord struct {
-	conn       net.Conn
-	waitCh     chan bool
+	conn   net.Conn
+	waitCh chan bool
 }
 
 type AgentServer struct {
@@ -190,17 +191,22 @@ func (ser *AgentServer) handleClient(conn net.Conn) {
 
 		_, receiverId := util.RecvNetMessage(conn)
 
-		ser.mu.Lock()
-		ser.bufferMap[cliId] = SenderBuffer{
-			priority:      priority,
-			triggerSendCh: make(chan bool),
-			receiverId:    receiverId,
-		}
-		ser.mu.Unlock()
-
+		senderExit := false
+		triggerSendCh := make(chan bool, 1)
+		exitCh := make(chan bool, 1)
+		exitWaitCh := make(chan bool, 1)
 		bufferedData := []string{}
 		var receiverClusterIp string = ""
 		var transferConn net.Conn = nil
+
+		ser.mu.Lock()
+		ser.bufferMap[cliId] = SenderBuffer{
+			senderId:      cliId,
+			priority:      priority,
+			triggerSendCh: triggerSendCh,
+			receiverId:    receiverId,
+		}
+		ser.mu.Unlock()
 
 		beginTransfer := func() {
 			sockfile, tconn := util.CreateMptcpConnection(receiverClusterIp, config.DataTransferPort)
@@ -238,11 +244,6 @@ func (ser *AgentServer) handleClient(conn net.Conn) {
 			util.SendNetMessage(transferConn, config.ClientData, data)
 		}
 
-		senderExit := false
-		triggerSendCh := make(chan bool, 1)
-		exitCh := make(chan bool, 1)
-		exitWaitCh := make(chan bool, 1)
-
 		// pull receiver cluster ip in a loop
 		// wait until receiver connects into the cluster
 		go func() {
@@ -266,13 +267,16 @@ func (ser *AgentServer) handleClient(conn net.Conn) {
 
 		// send buffered data loop
 		go func() {
+		sendloop:
 			for {
 				select {
 				case <-triggerSendCh:
 				case <-exitCh:
-					break
+					break sendloop
 				}
-				sendBuffferedData()
+				if ser.isFirstPriority(cliId) {
+					sendBuffferedData()
+				}
 				if senderExit {
 					exitWaitCh <- true
 				}
@@ -312,6 +316,7 @@ func (ser *AgentServer) handleClient(conn net.Conn) {
 				ser.mu.Lock()
 				delete(ser.bufferMap, cliId)
 				ser.mu.Unlock()
+				ser.triggerNextPriority(receiverId)
 				log.Printf("sender %s Exit", cliId)
 				break
 			} else if cmd == config.FetchClientData {
@@ -341,8 +346,8 @@ func (ser *AgentServer) handleClient(conn net.Conn) {
 				ch := make(chan bool)
 				ser.mu.Lock()
 				ser.senderMap[senderId] = SenderRecord{
-					conn:       conn,
-					waitCh:     ch,
+					conn:   conn,
+					waitCh: ch,
 				}
 				ser.mu.Unlock()
 				<-ch
@@ -355,6 +360,30 @@ func (ser *AgentServer) handleClient(conn net.Conn) {
 		wg.Wait()
 	} else {
 		log.Fatalln("unknown client type:", clientType)
+	}
+}
+
+func (ser *AgentServer) triggerNextPriority(receiverId string) {
+	ser.mu.Lock()
+	defer ser.mu.Unlock()
+
+	var nextBf SenderBuffer
+	maxPri := 0
+	for _, bf := range ser.bufferMap {
+		if bf.receiverId != receiverId {
+			continue
+		}
+		if bf.priority > maxPri {
+			nextBf = bf
+			maxPri = bf.priority
+		}
+	}
+	if maxPri > 0 {
+		select {
+		case nextBf.triggerSendCh <- true:
+		default:
+		}
+		log.Println("trigger next priority:", nextBf.senderId)
 	}
 }
 
