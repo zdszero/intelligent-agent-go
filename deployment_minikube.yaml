@@ -60,3 +60,7 @@ spec:
       protocol: TCP
       port: 8082
       targetPort: 8082
+    - name: "monitor-port"
+      protocol: TCP
+      port: 8084
+      targetPort: 8084

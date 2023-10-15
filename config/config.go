@@ -17,10 +17,14 @@ const (
 	// transfer settings
 	TransferData
 	TransferEnd
+	//monitor settings
+	TestServiceThrought //client send to server
+	TestBetweenServices
 
 	ClientServePort  = 8081
 	DataTransferPort = 8082
 	PingPort         = 8083
+	MonitorNetPort   = 8084
 
 	RoleSender   = "sender"
 	RoleReceiver = "receiver"

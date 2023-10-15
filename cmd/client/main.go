@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"flag"
 	"fmt"
+	"math"
 	"net"
 	"os"
 	"os/signal"
@@ -15,6 +16,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/olekukonko/tablewriter"
 
 	"k8s.io/client-go/util/homedir"
 )
@@ -158,6 +161,8 @@ func repl(cli AgentClient, eofCh chan bool) {
 			return
 		case ".service":
 			cli.showService()
+		case ".iperf":
+			cli.getServiceNetState(tokens[1])
 		case ".connect":
 			svcName := tokens[1]
 			cli.connectToService(svcName)
@@ -188,23 +193,25 @@ func printHelp(role string) {
 			`Usage:
     %s <command> [arguments]
 The commands and arguments are:
-    .help
-    .exit
-    .service
-    .connect  [serviceName]
-    .send     [data]
-    .sendfile [filePath]
-    .fetch    [clientId]
+	.help
+	.exit
+	.iperf	  [recvName]
+	.service
+	.connect  [serviceName]
+	.send     [data]
+	.sendfile [filePath]
+	.fetch    [clientId]
 `, os.Args[0])
 	} else if role == config.RoleReceiver {
 		help = fmt.Sprintf(
 			`Usage:
     %s <command> [arguments]
 The commands and arguments are:
-    .help
-    .exit
-    .service
-    .connect  [serviceName]
+	.help
+	.exit
+	.iperf		[recvName]
+	.service
+	.connect	[serviceName]
 `, os.Args[0])
 	}
 	fmt.Println(help)
@@ -227,6 +234,7 @@ func (cli *AgentClient) setReceiver(senders []string) {
 	cli.senderIds = senders
 }
 
+// client 获取智能代理的信息
 func (cli *AgentClient) updateServerInfo() {
 	cli.k8sSvc = cli.k8sCli.GetNamespaceServices(config.Namespace)
 	serverNum := len(cli.k8sSvc) / 2
@@ -263,13 +271,14 @@ func (cli *AgentClient) updateServerInfo() {
 
 func (cli *AgentClient) showService() {
 	cli.updateServerInfo()
-	headers := []string{"Service Name", "Proxy IP", "Delay"}
-	fmt.Printf("%-20s %-25s %-15s\n", headers[0], headers[1], headers[2])
-	fmt.Println(strings.Repeat("-", 60))
+	headers := []string{"Service Name", "Proxy IP", "Delay", "Latency jitter"}
+	fmt.Printf("%-20s %-25s %-15s %-15s\n", headers[0], headers[1], headers[2], headers[3])
+	fmt.Println(strings.Repeat("-", 70))
 	for _, info := range cli.serverInfo {
-		fmt.Printf("%-20s %-25s %-15s\n", info.serviceName, fmt.Sprintf("%s:%d", cli.k8sIp, info.proxyPort),
-			fmt.Sprintf("%.3fms", float64(info.delay.Abs().Microseconds())/1000))
+		fmt.Printf("%-20s %-25s %-15s %-15s\n", info.serviceName, fmt.Sprintf("%s:%d", cli.k8sIp, info.proxyPort),
+			fmt.Sprintf("%.3fms", float64(info.delay.Abs().Microseconds())/1000), fmt.Sprintf("%.3f", cli.getPingDelayJitter(info.pingPort)))
 	}
+	fmt.Println(strings.Repeat("-", 70))
 }
 
 func (cli *AgentClient) sendData(data string) {
@@ -342,6 +351,43 @@ func (cli *AgentClient) getPingDelay(port int32) (time.Duration, error) {
 
 	elapsed := time.Since(start)
 	return elapsed, nil
+}
+
+func (cli *AgentClient) getPingDelayJitter(port int32) float64 {
+	//use getPingDelay * 5
+	var pingDelay []float64
+	for i := 0; i < 5; i++ {
+		delay, err := cli.getPingDelay(port)
+		if err != nil {
+			fmt.Println("Error using getPingDelay func:", err)
+			continue
+		}
+		//fmt.Println(delay)
+		mDelay := float64(delay) / 1000000 //将数值转换为ms
+		//fmt.Println(mDelay)
+		pingDelay = append(pingDelay, mDelay)
+	}
+	if len(pingDelay) == 0 {
+		fmt.Println("Error using getPingDelay func:")
+		return math.Inf(1) //返回正无穷大
+	}
+	//计算平均时延
+	sumDelay := 0.0
+	for _, data := range pingDelay {
+		sumDelay += data
+	}
+	meanDelay := sumDelay / float64(len(pingDelay))
+
+	//计算平方差和
+	squaredDifferencesSum := 0.0
+	for _, delay := range pingDelay {
+		squaredDifferences := (delay - meanDelay) * (delay - meanDelay)
+		squaredDifferencesSum += squaredDifferences
+	}
+
+	//计算方差
+	variance := squaredDifferencesSum / float64(len(pingDelay))
+	return variance
 }
 
 func (cli *AgentClient) connectToService(svcName string) {
@@ -486,4 +532,60 @@ func (cli *AgentClient) fetchClientData(clientId string) {
 	for _, data := range dataset {
 		fmt.Println(data)
 	}
+}
+
+func (cli *AgentClient) getServiceNetState(recvName string) {
+	//创建表格用于输出信息
+	table := tablewriter.NewWriter(os.Stdout)
+	table.SetHeader([]string{"service1---service2", "throughput(Mbps)", "Packet Loss Rate(%)"})
+	cli.updateServerInfo()
+	fmt.Println(recvName)
+	recvIp := cli.findTransferIp(recvName)
+	for _, info := range cli.serverInfo {
+		if info.serviceName == recvName {
+			continue
+		}
+		proxyPort := cli.findProxyPort(info.serviceName)
+		fmt.Printf("connect to %s:%d\n", info.serviceName, proxyPort) //连接server
+		sockfile, conn := util.CreateMptcpConnection(cli.k8sIp, proxyPort)
+		fmt.Println(cli.k8sIp)
+		if conn == nil {
+			fmt.Println("测试智能代理出现错误")
+			os.Exit(1)
+		}
+		if cli.conn != nil {
+			util.SendNetMessage(cli.conn, config.ClientExit, "")
+			cli.conn.Close()
+		}
+		var throughput string
+		var loss_rate string
+		util.SendNetMessage(conn, config.TestServiceThrought, "")
+		//fmt.Println("client 发送测试命令")
+		util.SendNetMessage(conn, config.ClusterIp, info.transferIp)
+		//fmt.Println("client 发送智能代理的内部ip")
+		util.SendNetMessage(conn, config.ClusterIp, recvIp)
+		for {
+
+			cmd, data := util.RecvNetMessage(conn)
+			fmt.Println("--------开始接收消息----------")
+			if cmd == config.TestServiceThrought {
+				parts := strings.Split(data, "-")
+				if len(parts) != 2 {
+					fmt.Println("字符串格式不正确")
+					return
+				}
+				throughput = parts[0]
+				loss_rate = parts[1]
+				//fmt.Println(data)
+			} else if cmd == config.TransferFinished {
+				//fmt.Println("与智能代理断开连接")
+				break
+			}
+
+		}
+		table.Append([]string{fmt.Sprintf("%s---%s", info.serviceName, recvName), throughput, loss_rate})
+		sockfile.Close()
+		conn.Close()
+	}
+	table.Render()
 }
